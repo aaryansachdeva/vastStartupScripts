@@ -38,12 +38,12 @@ export AWS_DEFAULT_OUTPUT="json"
 
 # Download files from S3
 echo "Downloading files from S3..."
-aws s3 cp s3://psfiles2/Linux904.7z /workspace/
+aws s3 cp s3://psfiles2/Linux908.1.7z /workspace/
 aws s3 cp s3://psfiles2/PS_Next_Claude_904.7z /workspace/
 
 # Extract archives
 echo "Extracting Linux904.7z..."
-7z x /workspace/Linux904.7z -o/workspace/
+7z x /workspace/Linux908.1.7z -o/workspace/
 
 echo "Extracting PS_Next_Claude_904.7z..."
 7z x /workspace/PS_Next_Claude_904.7z -o/workspace/
