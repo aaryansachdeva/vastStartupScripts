@@ -46,7 +46,7 @@ echo "Extracting UE Application..."
 7z x /workspace/Linux908.1.7z -o/workspace/
 
 echo "Extracting PS_Next_Claude..."
-7z x /workspace/PS_Next_Claude_910.7z -o/workspace/
+7z x /workspace/PS_Next_Claude_904.7z -o/workspace/
 
 # Download fotonInstanceRegister_vast
 cd /workspace/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash
