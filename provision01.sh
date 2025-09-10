@@ -48,6 +48,11 @@ echo "Extracting UE Application..."
 echo "Extracting PS_Next_Claude..."
 7z x /workspace/PS_Next_Claude_910.7z -o/workspace/
 
+# Download fotonInstanceRegister_vast
+cd /workspace/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash
+wget https://raw.githubusercontent.com/aaryansachdeva/vastStartupScripts/refs/heads/main/fotonInstanceRegister_vast.sh
+echo "Downloaded fotonInstanceRegister_vast"
+
 # Make extracted files executable (if needed)
 find /workspace/ -name "*.sh" -exec chmod +x {} \;
 
