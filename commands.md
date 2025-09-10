@@ -42,11 +42,12 @@ su - foton
 
 	xvfb-run ./AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingUrl=ws://localhost:8888
 
-xvfb-run -n 90 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingUrl=ws://localhost:8888
-xvfb-run -n 91 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingUrl=ws://localhost:8889
-xvfb-run -n 92 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=AV1 -PixelStreamingUrl=ws://localhost:8890
-xvfb-run -n 93 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=AV1 -PixelStreamingUrl=ws://localhost:8891
-xvfb-run -n 94 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=AV1 -PixelStreamingUrl=ws://localhost:8892
+xvfb-run -n 90 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=AV1 -PixelStreamingUrl=ws://localhost:8888 -PixelStreamingWebRTCMaxFps=24
+xvfb-run -n 91 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=AV1 -PixelStreamingUrl=ws://localhost:8889 -PixelStreamingWebRTCMaxFps=24
+xvfb-run -n 92 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=AV1 -PixelStreamingUrl=ws://localhost:8890 -PixelStreamingWebRTCMaxFps=24
+xvfb-run -n 93 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=AV1 -PixelStreamingUrl=ws://localhost:8891 -PixelStreamingWebRTCMaxFps=24
+xvfb-run -n 94 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=AV1 -PixelStreamingUrl=ws://localhost:8892 -PixelStreamingWebRTCMaxFps=24
+xvfb-run -n 95 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=AV1 -PixelStreamingUrl=ws://localhost:8893 -PixelStreamingWebRTCMaxFps=24
 
 xvfb-run -n 90 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=h264 -PixelStreamingHWEncode=true -PixelStreamingEncoderTarget=nvenc -PixelStreamingUrl=ws://localhost:8888
 
