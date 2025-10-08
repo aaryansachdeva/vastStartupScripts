@@ -13,7 +13,7 @@ IFS=$'\n\t'
 # ---------- Config (tweak if needed) ----------
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 LOG_DIR="${LOG_DIR:-${WORKSPACE_DIR}/logs}"
-INSTANCES="${INSTANCES:-1}"              # default instances (can override with -n)
+INSTANCES="${INSTANCES:-2}"              # default instances (can override with -n)
 SESSION_NAME="${SESSION_NAME:-pixel}"    # tmux session
 GAME_LAUNCHER="${GAME_LAUNCHER:-${WORKSPACE_DIR}/Linux/AudioTestProject02.sh}"
 SIGNALLER_DIR="${SIGNALLER_DIR:-${WORKSPACE_DIR}/PS_Next_Claude/WebServers/SignallingWebServer}"
