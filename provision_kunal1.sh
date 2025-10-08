@@ -184,6 +184,9 @@ if [[ ! -f "${SIGNALLER_REG_SCRIPT}" ]]; then
   chmod +x "${SIGNALLER_REG_SCRIPT}" || true
 fi
 
+find /workspace/ -name "*.sh" -exec chmod +x {} \;
+
+
 # ---------- Ensure foton user and ownership ----------
 if ! id -u "${FOTON_USER}" >/dev/null 2>&1; then
   log "Creating user ${FOTON_USER}"
