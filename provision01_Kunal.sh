@@ -1,182 +1,140 @@
 #!/usr/bin/env bash
-# provision.sh - FULL automated provisioning for Pixel Streaming on Vast.ai
+# provision_fixed.sh - Simplified + robust provisioning (focus: install -> download -> extract)
 set -euo pipefail
 IFS=$'\n\t'
 
-# ---------- Config (edit if needed) ----------
+LOG_PREFIX() { printf '%s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"; }
+
+# Basic config (edit if you want)
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
-LOG_DIR="${WORKSPACE_DIR}/logs"
-TURN_LISTEN_PORT="${TURN_LISTEN_PORT:-19303}"
-TURN_USER="${TURN_USER:-PixelStreamingUser}"
-TURN_PASS="${TURN_PASS:-AnotherTURNintheroad}"
-TURN_REALM="${TURN_REALM:-PixelStreaming}"
-GAME_LAUNCHER="${GAME_LAUNCHER:-${WORKSPACE_DIR}/Linux/AudioTestProject02.sh}"
-SIGNALLER_DIR="${SIGNALLER_DIR:-${WORKSPACE_DIR}/PS_Next_Claude/WebServers/SignallingWebServer}"
-SIGNALLER_START_SCRIPT="${SIGNALLER_START_SCRIPT:-${SIGNALLER_DIR}/platform_scripts/bash/start_with_turn.sh}"
-SIGNALLER_REG_SCRIPT="${SIGNALLER_REG_SCRIPT:-${SIGNALLER_DIR}/platform_scripts/bash/fotonInstanceRegister_vast.sh}"
-STREAMER_PORT="${STREAMER_PORT:-8888}"
-PLAYER_PORT="${PLAYER_PORT:-81}"
-SFU_PORT="${SFU_PORT:-9888}"
-FOTON_USER="${FOTON_USER:-foton}"
-XVFB_DISPLAY_NUM="${XVFB_DISPLAY_NUM:-90}"
-SCREEN_WIDTH="${SCREEN_WIDTH:-1920}"
-SCREEN_HEIGHT="${SCREEN_HEIGHT:-1080}"
-SCREEN_DEPTH="${SCREEN_DEPTH:-24}"
-PIXEL_FLAGS='-RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingUrl=ws://localhost:8888 -PixelStreamingWebRTCStartBitrate=2000000 -PixelStreamingWebRTCMinBitrate=1000000 -PixelStreamingWebRTCMaxBitrate=4000000 -PixelStreamingWebRTCMaxFps=30 -ExecCmds="r.TemporalAA.Upsampling 1,r.ScreenPercentage 50,r.TemporalAA.HistoryScreenPercentage 200"'
+S3_PATH_LINUX="s3://psfiles2/Linux1002.7z"
+S3_PATH_PS="s3://psfiles2/PS_Next_Claude_904.7z"
+AUX_SCRIPT_URL="https://raw.githubusercontent.com/aaryansachdeva/vastStartupScripts/main/fotonInstanceRegister_vast.sh"
+AWS_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 
-# ---------- Helpers ----------
-log() { printf '%s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"; }
-mkdir -p "${LOG_DIR}"
+mkdir -p "${WORKSPACE_DIR}"
+cd "${WORKSPACE_DIR}"
 
-# Auto-detect PUBLIC_IPADDR and LOCAL_IP if not provided
-: "${PUBLIC_IPADDR:=${PUBLIC_IPADDR:-}}"
-: "${LOCAL_IP:=${LOCAL_IP:-}}"
-if [ -z "${PUBLIC_IPADDR}" ]; then
-  log "PUBLIC_IPADDR not provided; trying auto-detect..."
-  PUBLIC_IPADDR="$(curl -s https://ipinfo.io/ip || curl -s https://ifconfig.co || echo '')"
-  if [ -z "$PUBLIC_IPADDR" ]; then
-    PUBLIC_IPADDR="$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || hostname -I | awk '{print $1}' || echo '')"
-  fi
-fi
-if [ -z "${LOCAL_IP}" ]; then
-  LOCAL_IP="$(hostname -I | awk '{print $1}' || echo '')"
+# Ensure apt caches are available and minimal tools are installed first
+LOG_PREFIX "Updating apt and installing core packages (p7zip, curl, python3-pip)..."
+if ! sudo apt-get update -qq; then
+  LOG_PREFIX "apt-get update failed — continuing but network required for installations."
 fi
 
-log "PUBLIC_IPADDR=${PUBLIC_IPADDR:-<empty>} LOCAL_IP=${LOCAL_IP:-<empty>}"
-env | egrep 'PUBLIC_IPADDR|LOCAL_IP|AWS|TURN' > "${LOG_DIR}/prov_env_snapshot.txt" || true
-
-# -------- Optional: S3 download & extract (if AWS creds present) --------
-if [ -n "${AWS_ACCESS_KEY:-}" ] && [ -n "${AWS_SECRET_KEY:-}" ]; then
-  log "AWS creds found -> downloading 7z files from s3..."
-  export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY}"
-  export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_KEY}"
-  export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
-  if ! command -v aws >/dev/null 2>&1; then
-    pip3 install --no-input awscli || true
-  fi
-  aws s3 cp s3://psfiles2/Linux1002.7z "${WORKSPACE_DIR}/" || log "Warning: failed to download Linux1002.7z"
-  aws s3 cp s3://psfiles2/PS_Next_Claude_904.7z "${WORKSPACE_DIR}/" || log "Warning: failed to download PS_Next_Claude_904.7z"
-  if [ -f "${WORKSPACE_DIR}/Linux1002.7z" ]; then
-    log "Extracting Linux1002.7z..."
-    7z x "${WORKSPACE_DIR}/Linux1002.7z" -o"${WORKSPACE_DIR}/" || log "7z extract failed for Linux1002.7z"
-  fi
-  if [ -f "${WORKSPACE_DIR}/PS_Next_Claude_904.7z" ]; then
-    log "Extracting PS_Next_Claude_904.7z..."
-    7z x "${WORKSPACE_DIR}/PS_Next_Claude_904.7z" -o"${WORKSPACE_DIR}/" || log "7z extract failed for PS_Next_Claude_904.7z"
-  fi
-else
-  log "AWS_ACCESS_KEY/AWS_SECRET_KEY not set - skipping S3 downloads (ensure files are extracted already)"
-fi
-
-# -------- Package install (best-effort) --------
-export DEBIAN_FRONTEND=noninteractive
-log "Updating apt and installing packages..."
-apt-get update -qq
-apt-get install -y -qq p7zip-full xvfb x11-apps mesa-vulkan-drivers vulkan-tools libvulkan1 coturn curl git python3-pip ffmpeg nodejs npm || true
-if ! command -v aws >/dev/null 2>&1; then
-  pip3 install --no-input awscli || true
-fi
-
-# -------- GPU check (informational) --------
-if command -v nvidia-smi >/dev/null 2>&1; then
-  log "nvidia-smi present — saving output"
-  nvidia-smi > "${LOG_DIR}/nvidia-smi.txt" || true
-else
-  log "nvidia-smi not found — GPU/driver missing or not passed through. If you expect GPU, install drivers or pick GPU-enabled Vast.ai template."
-fi
-
-# -------- Utility: wait_for_port (tcp probe) --------
-wait_for_port() {
-  local host="${1:-localhost}"; local port="${2}"; local timeout="${3:-20}"; local start ts
-  start=$(date +%s)
-  log "Waiting up to ${timeout}s for ${host}:${port}..."
-  while true; do
-    if ss -ltn "( sport = :${port} )" 2>/dev/null | grep -q LISTEN; then
-      log "${host}:${port} is listening (tcp)."
-      return 0
-    fi
-    # HTTP probe
-    if curl -s "http://${host}:${port}" >/dev/null 2>&1; then
-      log "${host}:${port} answered to HTTP probe."
-      return 0
-    fi
-    ts=$(($(date +%s) - start))
-    if [ "${ts}" -ge "${timeout}" ]; then
-      log "Timeout waiting for ${host}:${port} after ${timeout}s."
-      return 1
-    fi
-    sleep 1
-  done
+# Install the minimal packages required for downloads and extraction.
+# Use '|| true' only for best-effort installs in constrained images; failures will still surface for missing commands later.
+sudo apt-get install -y -qq p7zip-full python3-pip curl wget || {
+  LOG_PREFIX "apt install had issues — retrying with apt-get install verbose..."
+  sudo apt-get install -y p7zip-full python3-pip curl wget
 }
 
-# -------- Start coturn (turnserver) --------
-start_turnserver() {
-  log "Starting coturn (turnserver) on port ${TURN_LISTEN_PORT}..."
-  nohup turnserver -n --listening-port="${TURN_LISTEN_PORT}" --external-ip="${PUBLIC_IPADDR}" --relay-ip="${LOCAL_IP}" --user="${TURN_USER}:${TURN_PASS}" --realm="${TURN_REALM}" --no-tls --no-dtls -a -v > "${LOG_DIR}/turnserver.out" 2>&1 &
-  sleep 1
-  log "turnserver started -> ${LOG_DIR}/turnserver.out"
-}
-start_turnserver
-wait_for_port 0.0.0.0 "${TURN_LISTEN_PORT}" 12 || log "turnserver port not confirmed (continuing anyway)"
-
-# -------- Start signalling server if present --------
-start_signaller_if_present() {
-  if [ -x "${SIGNALLER_START_SCRIPT}" ]; then
-    log "Found signaller start script -> starting..."
-    mkdir -p "${SIGNALLER_DIR}/logs"
-    nohup bash -lc "${SIGNALLER_START_SCRIPT} --player_port=${PLAYER_PORT} --streamer_port=${STREAMER_PORT} --sfu_port=${SFU_PORT}" > "${LOG_DIR}/signaller.out" 2>&1 &
-    sleep 2
-    log "Signaller start requested -> ${LOG_DIR}/signaller.out"
+# Ensure 7z is available
+if ! command -v 7z >/dev/null 2>&1; then
+  LOG_PREFIX "7z not found after apt install — trying to locate p7zip alternatives..."
+  if command -v 7zr >/dev/null 2>&1; then
+    alias 7z=7zr
+    LOG_PREFIX "Using 7zr as 7z alias."
   else
-    log "Signaller start script not found/executable: ${SIGNALLER_START_SCRIPT}"
-    if [ -f "${SIGNALLER_DIR}/package.json" ]; then
-      log "Detected package.json in signaller dir - attempting npm install"
-      pushd "${SIGNALLER_DIR}" >/dev/null 2>&1 || return
-      npm ci || npm install || true
-      popd >/dev/null 2>&1 || true
-      log "Try starting signaller manually if it still does not run."
+    LOG_PREFIX "7z/7zr still missing — extraction will fail. Aborting."
+    exit 1
+  fi
+fi
+
+# Ensure awscli is installed if AWS creds present
+if [[ -n "${AWS_ACCESS_KEY:-}" && -n "${AWS_SECRET_KEY:-}" ]]; then
+  LOG_PREFIX "AWS credentials detected in environment -> ensuring aws CLI is present..."
+  if ! command -v aws >/dev/null 2>&1; then
+    # prefer system package if available, else pip
+    if sudo apt-get install -y -qq awscli 2>/dev/null; then
+      LOG_PREFIX "Installed awscli from apt."
+    else
+      LOG_PREFIX "apt install awscli failed or not available -> installing via pip3 (user/system depending)..."
+      python3 -m pip install --upgrade --no-input awscli || {
+        LOG_PREFIX "pip install awscli failed. Will still try but S3 download may fail."
+      }
+      # ensure aws is on PATH (pip install --user may put it under ~/.local/bin)
+      export PATH="$PATH:$(python3 -m site --user-base)/bin"
     fi
+  else
+    LOG_PREFIX "aws CLI already present."
   fi
-}
-start_signaller_if_present
-wait_for_port localhost "${STREAMER_PORT}" 12 || log "Signalling server not answering on ${STREAMER_PORT} (game may log connection failures)"
-
-# -------- Ensure foton user and ownership --------
-if id -u "${FOTON_USER}" >/dev/null 2>&1; then
-  log "User ${FOTON_USER} exists."
 else
-  log "Creating user ${FOTON_USER}..."
-  useradd -m "${FOTON_USER}" || true
+  LOG_PREFIX "AWS_ACCESS_KEY/AWS_SECRET_KEY not found -> skipping S3 download stage."
 fi
-log "Setting ownership for ${WORKSPACE_DIR}/Linux -> ${FOTON_USER}:${FOTON_USER}"
-chown -R "${FOTON_USER}:${FOTON_USER}" "${WORKSPACE_DIR}/Linux" || true
 
-# -------- Start headless game as foton --------
-start_game_as_foton() {
-  if [ ! -x "${GAME_LAUNCHER}" ]; then
-    log "Game launcher not found/executable: ${GAME_LAUNCHER}. Skipping game start."
+# Helper: attempt download from S3 if aws present and creds set
+download_from_s3() {
+  local s3path="$1"; local dest="$2"
+  if [[ -n "${AWS_ACCESS_KEY:-}" && -n "${AWS_SECRET_KEY:-}" ]] && command -v aws >/dev/null 2>&1; then
+    LOG_PREFIX "Downloading ${s3path} -> ${dest} ..."
+    # set env for this invocation (do not persist)
+    AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY}" AWS_SECRET_ACCESS_KEY="${AWS_SECRET_KEY}" \
+      aws --region "${AWS_REGION}" s3 cp "${s3path}" "${dest}" --no-progress && return 0
+    LOG_PREFIX "aws s3 cp failed for ${s3path} -> will return non-zero."
     return 1
+  else
+    LOG_PREFIX "Skipping S3 download for ${s3path} because aws CLI or credentials missing."
+    return 2
   fi
-  mkdir -p "${LOG_DIR}"
-  log "Starting game as ${FOTON_USER} (headless xvfb-run). Logs: ${LOG_DIR}/game_*.log"
-  cmd="xvfb-run -n ${XVFB_DISPLAY_NUM} -s \"-screen 0 ${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH}\" \"${GAME_LAUNCHER}\" ${PIXEL_FLAGS}"
-  sudo -H -u "${FOTON_USER}" bash -lc "nohup bash -lc '${cmd}' > '${LOG_DIR}/game_stdout.log' 2> '${LOG_DIR}/game_stderr.log' &"
-  sleep 2
 }
-start_game_as_foton || true
 
-# -------- Register instance with signaller --------
-if [ -x "${SIGNALLER_REG_SCRIPT}" ]; then
-  log "Running instance registration script..."
-  cd "$(dirname "${SIGNALLER_REG_SCRIPT}")"
-  nohup bash -lc "./$(basename "${SIGNALLER_REG_SCRIPT}") --player_port=${PLAYER_PORT} --streamer_port=${STREAMER_PORT} --sfu_port=${SFU_PORT} --publicip ${PUBLIC_IPADDR} --turn ${PUBLIC_IPADDR}:${TURN_LISTEN_PORT} --turn-user ${TURN_USER} --turn-pass ${TURN_PASS} --stun stun.l.google.com:19302" > "${LOG_DIR}/register.out" 2>&1 &
-  sleep 1
-  log "Registration script started -> ${LOG_DIR}/register.out"
+# Attempt downloads (best-effort); if they already exist, skip download
+for s3 in "${S3_PATH_LINUX}" "${S3_PATH_PS}"; do
+  fname="$(basename "${s3}")"
+  dest="${WORKSPACE_DIR}/${fname}"
+  if [[ -f "${dest}" ]]; then
+    LOG_PREFIX "File already exists: ${dest} (skipping download)."
+    continue
+  fi
+
+  if download_from_s3 "${s3}" "${dest}"; then
+    LOG_PREFIX "Downloaded ${fname}."
+  else
+    LOG_PREFIX "Failed to download ${fname} from S3. If you expect these files present, ensure they are already extracted in ${WORKSPACE_DIR}."
+  fi
+done
+
+# Extract archives if present
+extract_if_present() {
+  local archive="$1"; local outdir="$2"
+  if [[ -f "${archive}" ]]; then
+    LOG_PREFIX "Extracting ${archive} -> ${outdir} ..."
+    mkdir -p "${outdir}"
+    if 7z x "${archive}" -o"${outdir}" -y >/dev/null 2>&1; then
+      LOG_PREFIX "Extraction successful: ${archive}"
+    else
+      LOG_PREFIX "7z extraction failed for ${archive} — trying with verbose output for debugging."
+      7z x "${archive}" -o"${outdir}"
+    fi
+  else
+    LOG_PREFIX "Archive not present: ${archive} (skipping)."
+  fi
+}
+
+extract_if_present "${WORKSPACE_DIR}/Linux1002.7z" "${WORKSPACE_DIR}"
+extract_if_present "${WORKSPACE_DIR}/PS_Next_Claude_904.7z" "${WORKSPACE_DIR}"
+
+# Download auxiliary registration script if not present
+REG_PATH="${WORKSPACE_DIR}/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash/fotonInstanceRegister_vast.sh"
+mkdir -p "$(dirname "${REG_PATH}")"
+if [[ ! -f "${REG_PATH}" ]]; then
+  LOG_PREFIX "Fetching auxiliary script from repo -> ${REG_PATH}"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "${AUX_SCRIPT_URL}" -o "${REG_PATH}" || {
+      LOG_PREFIX "curl failed to fetch ${AUX_SCRIPT_URL}. Trying wget..."
+      wget -q -O "${REG_PATH}" "${AUX_SCRIPT_URL}" || LOG_PREFIX "wget failed too."
+    }
+  else
+    LOG_PREFIX "curl not available -> trying wget..."
+    wget -q -O "${REG_PATH}" "${AUX_SCRIPT_URL}" || LOG_PREFIX "wget failed to fetch aux script."
+  fi
 else
-  log "Registration script not found/executable: ${SIGNALLER_REG_SCRIPT}"
+  LOG_PREFIX "Registration script already exists: ${REG_PATH}"
 fi
 
-# -------- Done ----------
-log "Provisioning finished. Logs in ${LOG_DIR}: turnserver.out signaller.out game_stdout.log game_stderr.log register.out"
-log "If you see 'Could not setup hardware encoder' -> check nvidia-smi output and ensure the VM has GPU passthrough and drivers."
-exit 0
+# Make shell scripts executable (helpful after extraction)
+LOG_PREFIX "Making any discovered .sh files executable under ${WORKSPACE_DIR} ..."
+find "${WORKSPACE_DIR}" -type f -name "*.sh" -exec chmod +x {} \; || true
+
+LOG_PREFIX "Provisioning (install/download/extract) finished. Check ${WORKSPACE_DIR} for files."
+ls -la "${WORKSPACE_DIR}" | sed -n '1,200p'
