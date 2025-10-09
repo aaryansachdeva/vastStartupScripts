@@ -18,7 +18,7 @@ pip install awscli
 
 aws configure
 	Access Key - 
-	Secret Access Key -
+	Secret Access Key - 
 	Region - 
 	Output - 
 
@@ -29,6 +29,8 @@ aws s3 cp s3://psfiles2/PS_Next_Claude_904.7z .
 7z x Linux904.7z
 
 7z x PS_Next_Claude_904.7z
+
+---- Automation ENDS ----
 
 useradd -m foton
 
@@ -42,12 +44,12 @@ su - foton
 
 	xvfb-run ./AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingUrl=ws://localhost:8888
 
-xvfb-run -n 90 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingUrl=ws://localhost:8888 -PixelStreamingWebRTCMaxFps=30 -ExecCmds="r.TemporalAA.Upsampling 1,r.ScreenPercentage 60,r.TemporalAA.HistoryScreenPercentage 200"
-xvfb-run -n 91 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingUrl=ws://localhost:8889 -PixelStreamingWebRTCMaxFps=30 -ExecCmds="r.TemporalAA.Upsampling 1,r.ScreenPercentage 60,r.TemporalAA.HistoryScreenPercentage 200"
-xvfb-run -n 92 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingUrl=ws://localhost:8890 -PixelStreamingWebRTCMaxFps=30 -ExecCmds="r.TemporalAA.Upsampling 1,r.ScreenPercentage 60,r.TemporalAA.HistoryScreenPercentage 200"
-xvfb-run -n 93 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingUrl=ws://localhost:8891 -PixelStreamingWebRTCMaxFps=30 -ExecCmds="r.TemporalAA.Upsampling 1,r.ScreenPercentage 60,r.TemporalAA.HistoryScreenPercentage 200" -graphicsadapter=2
-xvfb-run -n 94 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingUrl=ws://localhost:8892 -PixelStreamingWebRTCMaxFps=30 -ExecCmds="r.TemporalAA.Upsampling 1,r.ScreenPercentage 60,r.TemporalAA.HistoryScreenPercentage 200" -graphicsadapter=2
-xvfb-run -n 95 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingUrl=ws://localhost:8893 -PixelStreamingWebRTCMaxFps=30 -ExecCmds="r.TemporalAA.Upsampling 1,r.ScreenPercentage 60,r.TemporalAA.HistoryScreenPercentage 200" -graphicsadapter=2
+xvfb-run -n 90 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingUrl=ws://localhost:8888 -PixelStreamingWebRTCMaxFps=30 -ExecCmds="r.TemporalAA.Upsampling 1,r.ScreenPercentage 50,r.TemporalAA.HistoryScreenPercentage 200"
+xvfb-run -n 91 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingUrl=ws://localhost:8889 -PixelStreamingWebRTCMaxFps=30 -ExecCmds="r.TemporalAA.Upsampling 1,r.ScreenPercentage 50,r.TemporalAA.HistoryScreenPercentage 200"
+xvfb-run -n 92 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingUrl=ws://localhost:8890 -PixelStreamingWebRTCMaxFps=30 -ExecCmds="r.TemporalAA.Upsampling 1,r.ScreenPercentage 50,r.TemporalAA.HistoryScreenPercentage 200"
+xvfb-run -n 93 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingUrl=ws://localhost:8891 -PixelStreamingWebRTCMaxFps=30 -ExecCmds="r.TemporalAA.Upsampling 1,r.ScreenPercentage 50,r.TemporalAA.HistoryScreenPercentage 200" -graphicsadapter=2
+xvfb-run -n 94 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingUrl=ws://localhost:8892 -PixelStreamingWebRTCMaxFps=30 -ExecCmds="r.TemporalAA.Upsampling 1,r.ScreenPercentage 50,r.TemporalAA.HistoryScreenPercentage 200" -graphicsadapter=2
+xvfb-run -n 95 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingUrl=ws://localhost:8893 -PixelStreamingWebRTCMaxFps=30 -ExecCmds="r.TemporalAA.Upsampling 1,r.ScreenPercentage 50,r.TemporalAA.HistoryScreenPercentage 200" -graphicsadapter=2
 
 xvfb-run -n 90 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=h264 -PixelStreamingHWEncode=true -PixelStreamingEncoderTarget=nvenc -PixelStreamingUrl=ws://localhost:8888
 
@@ -69,7 +71,7 @@ xvfb-run -n 96 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.s
 
 	(once) chmod +x /workspace/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash/start_with_turn.sh
 
-/workspace/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash/start_with_turn.sh --player_port=80 --streamer_port=8888 --sfu_port=9888
+/workspace/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash/start_with_turn.sh --player_port=79 --streamer_port=8887 --sfu_port=9887
 /workspace/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash/start_with_turn.sh --player_port=81 --streamer_port=8889 --sfu_port=9889
 /workspace/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash/start_with_turn.sh --player_port=82 --streamer_port=8890 --sfu_port=9890
 /workspace/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash/start_with_turn.sh --player_port=83 --streamer_port=8891 --sfu_port=9891
@@ -121,4 +123,44 @@ turnserver \
   -a \
   -v &
 
-cd /workspace/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash && ./fotonInstanceRegister_vast.sh --player_port=80 --streamer_port=8888 --sfu_port=9888 --publicip $PUBLIC_IPADDR --turn $PUBLIC_IPADDR:$VAST_UDP_PORT_19303 --turn-user PixelStreamingUser --turn-pass AnotherTURNintheroad --stun stun.l.google.com:19302
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+cd /workspace/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash && ./fotonInstanceRegister_vast.sh --player_port=81 --streamer_port=8888 --sfu_port=9888 --publicip $PUBLIC_IPADDR --turn $PUBLIC_IPADDR:$VAST_UDP_PORT_19303 --turn-user PixelStreamingUser --turn-pass AnotherTURNintheroad --stun stun.l.google.com:19302
+
+cd /workspace/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash && ./fotonInstanceRegister_vast.sh --player_port=82 --streamer_port=8889 --sfu_port=9889 --publicip $PUBLIC_IPADDR --turn $PUBLIC_IPADDR:$VAST_UDP_PORT_19303 --turn-user PixelStreamingUser --turn-pass AnotherTURNintheroad --stun stun.l.google.com:19302
+
+cd /workspace/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash && ./fotonInstanceRegister_vast.sh --player_port=83 --streamer_port=8890 --sfu_port=9890 --publicip $PUBLIC_IPADDR --turn $PUBLIC_IPADDR:$VAST_UDP_PORT_19303 --turn-user PixelStreamingUser --turn-pass AnotherTURNintheroad --stun stun.l.google.com:19302
+
+--- 
+
+
+xvfb-run -n 90 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingH264Profile=BASELINE -PixelStreamingUrl=ws://localhost:8888 -PixelStreamingWebRTCStartBitrate=2000000 -PixelStreamingWebRTCMinBitrate=1000000 -PixelStreamingWebRTCMaxBitrate=4000000 -PixelStreamingWebRTCMaxFps=30 -ExecCmds="r.TemporalAA.Upsampling 1,r.ScreenPercentage 50,r.TemporalAA.HistoryScreenPercentage 200"
+
+xvfb-run -n 91 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingH264Profile=BASELINE -PixelStreamingUrl=ws://localhost:8889 -PixelStreamingWebRTCStartBitrate=2000000 -PixelStreamingWebRTCMinBitrate=1000000 -PixelStreamingWebRTCMaxBitrate=4000000 -PixelStreamingWebRTCMaxFps=30 -ExecCmds="r.TemporalAA.Upsampling 1,r.ScreenPercentage 50,r.TemporalAA.HistoryScreenPercentage 200"
+
+xvfb-run -n 92 -s "-screen 0 1920x1080x24" /workspace/Linux/AudioTestProject02.sh -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingH264Profile=BASELINE -PixelStreamingUrl=ws://localhost:8890 -PixelStreamingWebRTCStartBitrate=2000000 -PixelStreamingWebRTCMinBitrate=1000000 -PixelStreamingWebRTCMaxBitrate=4000000 -PixelStreamingWebRTCMaxFps=30 -ExecCmds="r.TemporalAA.Upsampling 1,r.ScreenPercentage 50,r.TemporalAA.HistoryScreenPercentage 200"
+
+
+
+
+
+
