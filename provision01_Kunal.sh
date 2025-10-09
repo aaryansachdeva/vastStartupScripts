@@ -1,140 +1,344 @@
 #!/usr/bin/env bash
-# provision_fixed.sh - Simplified + robust provisioning (focus: install -> download -> extract)
+#
+# provision_auto_start.sh - FIXED VERSION
+# Full automated provisioning for Pixel Streaming with proper wait logic
+#
 set -euo pipefail
 IFS=$'\n\t'
 
-LOG_PREFIX() { printf '%s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"; }
-
-# Basic config (edit if you want)
+# ---------- Config (tweak if needed) ----------
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
-S3_PATH_LINUX="s3://psfiles2/Linux1002.7z"
-S3_PATH_PS="s3://psfiles2/PS_Next_Claude_904.7z"
-AUX_SCRIPT_URL="https://raw.githubusercontent.com/aaryansachdeva/vastStartupScripts/main/fotonInstanceRegister_vast.sh"
+LOG_DIR="${LOG_DIR:-${WORKSPACE_DIR}/logs}"
+INSTANCES="${INSTANCES:-3}"
+SESSION_NAME="${SESSION_NAME:-pixel}"
+GAME_LAUNCHER="${GAME_LAUNCHER:-${WORKSPACE_DIR}/Linux/AudioTestProject02.sh}"
+SIGNALLER_DIR="${SIGNALLER_DIR:-${WORKSPACE_DIR}/PS_Next_Claude/WebServers/SignallingWebServer}"
+SIGNALLER_START_SCRIPT="${SIGNALLER_START_SCRIPT:-${SIGNALLER_DIR}/platform_scripts/bash/start_with_turn.sh}"
+SIGNALLER_REG_SCRIPT="${SIGNALLER_REG_SCRIPT:-${SIGNALLER_DIR}/platform_scripts/bash/fotonInstanceRegister_vast.sh}"
+S3_PATH_LINUX="${S3_PATH_LINUX:-s3://psfiles2/Linux1002.7z}"
+S3_PATH_PS="${S3_PATH_PS:-s3://psfiles2/PS_Next_Claude_904.7z}"
+AUX_SCRIPT_URL="${AUX_SCRIPT_URL:-https://raw.githubusercontent.com/aaryansachdeva/vastStartupScripts/main/fotonInstanceRegister_vast.sh}"
+
+# Ports (matching your working manual process)
+BASE_PLAYER="${BASE_PLAYER:-81}"
+BASE_STREAMER="${BASE_STREAMER:-8888}"
+BASE_SFU="${BASE_SFU:-9888}"
+TURN_LISTEN_PORT="${TURN_LISTEN_PORT:-19303}"
+
+# TURN / registration creds
+TURN_USER="${TURN_USER:-PixelStreamingUser}"
+TURN_PASS="${TURN_PASS:-AnotherTURNintheroad}"
+TURN_REALM="${TURN_REALM:-PixelStreaming}"
+
+# Display & rendering
+XVFB_BASE="${XVFB_BASE:-90}"
+SCREEN_WIDTH="${SCREEN_WIDTH:-1920}"
+SCREEN_HEIGHT="${SCREEN_HEIGHT:-1080}"
+SCREEN_DEPTH="${SCREEN_DEPTH:-24}"
+
+FOTON_USER="${FOTON_USER:-foton}"
 AWS_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 
-mkdir -p "${WORKSPACE_DIR}"
-cd "${WORKSPACE_DIR}"
+# ---------- Helpers ----------
+log() { printf '%s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"; }
+mkdir -p "${LOG_DIR}" "${WORKSPACE_DIR}"
 
-# Ensure apt caches are available and minimal tools are installed first
-LOG_PREFIX "Updating apt and installing core packages (p7zip, curl, python3-pip)..."
-if ! sudo apt-get update -qq; then
-  LOG_PREFIX "apt-get update failed — continuing but network required for installations."
-fi
-
-# Install the minimal packages required for downloads and extraction.
-# Use '|| true' only for best-effort installs in constrained images; failures will still surface for missing commands later.
-sudo apt-get install -y -qq p7zip-full python3-pip curl wget || {
-  LOG_PREFIX "apt install had issues — retrying with apt-get install verbose..."
-  sudo apt-get install -y p7zip-full python3-pip curl wget
+usage() {
+  cat <<EOF
+Usage: $0 [-n NUM_INSTANCES] [--skip-download] [--session NAME]
+Example: $0 -n 2 --session pixel
+EOF
+  exit 1
 }
 
-# Ensure 7z is available
-if ! command -v 7z >/dev/null 2>&1; then
-  LOG_PREFIX "7z not found after apt install — trying to locate p7zip alternatives..."
-  if command -v 7zr >/dev/null 2>&1; then
-    alias 7z=7zr
-    LOG_PREFIX "Using 7zr as 7z alias."
-  else
-    LOG_PREFIX "7z/7zr still missing — extraction will fail. Aborting."
-    exit 1
+# NEW: Wait for port to be listening
+wait_for_port() {
+  local port=$1
+  local max_wait=${2:-30}
+  local waited=0
+  log "Waiting for port ${port} to be listening..."
+  while ! netstat -tuln 2>/dev/null | grep -q ":${port} " && [ $waited -lt $max_wait ]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if [ $waited -ge $max_wait ]; then
+    log "WARNING: Port ${port} not ready after ${max_wait}s"
+    return 1
+  fi
+  log "Port ${port} is ready (waited ${waited}s)"
+  return 0
+}
+
+# NEW: Wait for HTTP endpoint
+wait_for_http() {
+  local url=$1
+  local max_wait=${2:-30}
+  local waited=0
+  log "Waiting for HTTP endpoint ${url}..."
+  while ! curl -sf "${url}" >/dev/null 2>&1 && [ $waited -lt $max_wait ]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if [ $waited -ge $max_wait ]; then
+    log "WARNING: HTTP endpoint ${url} not ready after ${max_wait}s"
+    return 1
+  fi
+  log "HTTP endpoint ${url} is ready (waited ${waited}s)"
+  return 0
+}
+
+# parse args
+SKIP_DOWNLOAD=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -n) INSTANCES="$2"; shift 2;;
+    --skip-download) SKIP_DOWNLOAD=1; shift;;
+    --session) SESSION_NAME="$2"; shift 2;;
+    -h|--help) usage;;
+    *) echo "Unknown arg: $1"; usage;;
+  esac
+done
+
+log "Starting provisioning: session='${SESSION_NAME}', instances=${INSTANCES}"
+
+# Auto-detect PUBLIC_IPADDR and LOCAL_IP
+PUBLIC_IPADDR="${PUBLIC_IPADDR:-}"
+LOCAL_IP="${LOCAL_IP:-}"
+if [ -z "${PUBLIC_IPADDR}" ]; then
+  log "Auto-detecting PUBLIC_IPADDR..."
+  PUBLIC_IPADDR="$(curl -s https://ipinfo.io/ip || curl -s https://ifconfig.co || echo '')"
+  if [ -z "$PUBLIC_IPADDR" ]; then
+    PUBLIC_IPADDR="$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || hostname -I | awk '{print $1}' || echo '')"
   fi
 fi
+if [ -z "${LOCAL_IP}" ]; then
+  LOCAL_IP="$(hostname -I | awk '{print $1}' || echo '')"
+fi
+log "PUBLIC_IPADDR=${PUBLIC_IPADDR:-<empty>} LOCAL_IP=${LOCAL_IP:-<empty>}"
 
-# Ensure awscli is installed if AWS creds present
+# ---------- Install required packages ----------
+log "Installing required packages..."
+apt-get update -qq || log "apt-get update warning (continuing)"
+apt-get install -y -qq p7zip-full python3-pip curl wget tmux coturn xvfb x11-apps \
+  mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg nodejs npm netcat-openbsd || {
+  log "Retrying package install with verbose output..."
+  apt-get install -y p7zip-full python3-pip curl wget tmux coturn xvfb x11-apps \
+    mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg nodejs npm netcat-openbsd
+}
+
+# Install awscli via pip
 if [[ -n "${AWS_ACCESS_KEY:-}" && -n "${AWS_SECRET_KEY:-}" ]]; then
-  LOG_PREFIX "AWS credentials detected in environment -> ensuring aws CLI is present..."
   if ! command -v aws >/dev/null 2>&1; then
-    # prefer system package if available, else pip
-    if sudo apt-get install -y -qq awscli 2>/dev/null; then
-      LOG_PREFIX "Installed awscli from apt."
-    else
-      LOG_PREFIX "apt install awscli failed or not available -> installing via pip3 (user/system depending)..."
-      python3 -m pip install --upgrade --no-input awscli || {
-        LOG_PREFIX "pip install awscli failed. Will still try but S3 download may fail."
-      }
-      # ensure aws is on PATH (pip install --user may put it under ~/.local/bin)
-      export PATH="$PATH:$(python3 -m site --user-base)/bin"
-    fi
-  else
-    LOG_PREFIX "aws CLI already present."
+    log "Installing awscli via pip..."
+    apt-get remove -y -qq awscli 2>/dev/null || true
+    python3 -m pip install --upgrade --no-input 'awscli' 'urllib3<2' 'botocore' 2>&1 | grep -v "already satisfied" || {
+      python3 -m pip install --upgrade --no-input awscli
+    }
+    export PATH="$PATH:$(python3 -m site --user-base 2>/dev/null)/bin"
   fi
-else
-  LOG_PREFIX "AWS_ACCESS_KEY/AWS_SECRET_KEY not found -> skipping S3 download stage."
 fi
 
-# Helper: attempt download from S3 if aws present and creds set
+# ---------- Download and extract archives ----------
 download_from_s3() {
   local s3path="$1"; local dest="$2"
   if [[ -n "${AWS_ACCESS_KEY:-}" && -n "${AWS_SECRET_KEY:-}" ]] && command -v aws >/dev/null 2>&1; then
-    LOG_PREFIX "Downloading ${s3path} -> ${dest} ..."
-    # set env for this invocation (do not persist)
+    log "Downloading ${s3path} -> ${dest}"
     AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY}" AWS_SECRET_ACCESS_KEY="${AWS_SECRET_KEY}" \
-      aws --region "${AWS_REGION}" s3 cp "${s3path}" "${dest}" --no-progress && return 0
-    LOG_PREFIX "aws s3 cp failed for ${s3path} -> will return non-zero."
-    return 1
+      aws --region "${AWS_REGION}" s3 cp "${s3path}" "${dest}" --no-progress || return 1
+    return 0
   else
-    LOG_PREFIX "Skipping S3 download for ${s3path} because aws CLI or credentials missing."
+    log "Skipping S3 download for ${s3path} (no aws or creds)"
     return 2
   fi
 }
 
-# Attempt downloads (best-effort); if they already exist, skip download
-for s3 in "${S3_PATH_LINUX}" "${S3_PATH_PS}"; do
-  fname="$(basename "${s3}")"
-  dest="${WORKSPACE_DIR}/${fname}"
-  if [[ -f "${dest}" ]]; then
-    LOG_PREFIX "File already exists: ${dest} (skipping download)."
-    continue
-  fi
-
-  if download_from_s3 "${s3}" "${dest}"; then
-    LOG_PREFIX "Downloaded ${fname}."
-  else
-    LOG_PREFIX "Failed to download ${fname} from S3. If you expect these files present, ensure they are already extracted in ${WORKSPACE_DIR}."
-  fi
-done
-
-# Extract archives if present
-extract_if_present() {
-  local archive="$1"; local outdir="$2"
-  if [[ -f "${archive}" ]]; then
-    LOG_PREFIX "Extracting ${archive} -> ${outdir} ..."
-    mkdir -p "${outdir}"
-    if 7z x "${archive}" -o"${outdir}" -y >/dev/null 2>&1; then
-      LOG_PREFIX "Extraction successful: ${archive}"
-    else
-      LOG_PREFIX "7z extraction failed for ${archive} — trying with verbose output for debugging."
-      7z x "${archive}" -o"${outdir}"
+if [ "${SKIP_DOWNLOAD}" -eq 0 ]; then
+  for s3 in "${S3_PATH_LINUX}" "${S3_PATH_PS}"; do
+    fname="$(basename "${s3}")"
+    dest="${WORKSPACE_DIR}/${fname}"
+    if [[ -f "${dest}" ]]; then
+      log "Archive already present: ${dest}"
+      continue
     fi
-  else
-    LOG_PREFIX "Archive not present: ${archive} (skipping)."
-  fi
-}
+    if download_from_s3 "${s3}" "${dest}"; then
+      log "Downloaded ${fname}"
+    else
+      log "Warning: failed to download ${fname}"
+    fi
+  done
 
-extract_if_present "${WORKSPACE_DIR}/Linux1002.7z" "${WORKSPACE_DIR}"
-extract_if_present "${WORKSPACE_DIR}/PS_Next_Claude_904.7z" "${WORKSPACE_DIR}"
+  extract_if_present() {
+    local archive="$1" outdir="${2:-${WORKSPACE_DIR}}"
+    if [[ -f "${archive}" ]]; then
+      log "Extracting ${archive} -> ${outdir}"
+      mkdir -p "${outdir}"
+      7z x "${archive}" -o"${outdir}" -y >/dev/null 2>&1 || 7z x "${archive}" -o"${outdir}"
+    fi
+  }
 
-# Download auxiliary registration script if not present
-REG_PATH="${WORKSPACE_DIR}/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash/fotonInstanceRegister_vast.sh"
-mkdir -p "$(dirname "${REG_PATH}")"
-if [[ ! -f "${REG_PATH}" ]]; then
-  LOG_PREFIX "Fetching auxiliary script from repo -> ${REG_PATH}"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "${AUX_SCRIPT_URL}" -o "${REG_PATH}" || {
-      LOG_PREFIX "curl failed to fetch ${AUX_SCRIPT_URL}. Trying wget..."
-      wget -q -O "${REG_PATH}" "${AUX_SCRIPT_URL}" || LOG_PREFIX "wget failed too."
-    }
-  else
-    LOG_PREFIX "curl not available -> trying wget..."
-    wget -q -O "${REG_PATH}" "${AUX_SCRIPT_URL}" || LOG_PREFIX "wget failed to fetch aux script."
-  fi
-else
-  LOG_PREFIX "Registration script already exists: ${REG_PATH}"
+  extract_if_present "${WORKSPACE_DIR}/$(basename "${S3_PATH_LINUX}")"
+  extract_if_present "${WORKSPACE_DIR}/$(basename "${S3_PATH_PS}")"
 fi
 
-# Make shell scripts executable (helpful after extraction)
-LOG_PREFIX "Making any discovered .sh files executable under ${WORKSPACE_DIR} ..."
-find "${WORKSPACE_DIR}" -type f -name "*.sh" -exec chmod +x {} \; || true
+# Fetch registration script
+mkdir -p "$(dirname "${SIGNALLER_REG_SCRIPT}")"
+if [[ ! -f "${SIGNALLER_REG_SCRIPT}" ]]; then
+  log "Fetching registration script..."
+  curl -fsSL "${AUX_SCRIPT_URL}" -o "${SIGNALLER_REG_SCRIPT}" || \
+    wget -q -O "${SIGNALLER_REG_SCRIPT}" "${AUX_SCRIPT_URL}"
+  chmod +x "${SIGNALLER_REG_SCRIPT}" || true
+fi
 
-LOG_PREFIX "Provisioning (install/download/extract) finished. Check ${WORKSPACE_DIR} for files."
-ls -la "${WORKSPACE_DIR}" | sed -n '1,200p'
+find /workspace/ -name "*.sh" -exec chmod +x {} \;
+
+# Create foton user
+if ! id -u "${FOTON_USER}" >/dev/null 2>&1; then
+  log "Creating user ${FOTON_USER}"
+  useradd -m "${FOTON_USER}" || true
+fi
+if [[ -d "${WORKSPACE_DIR}/Linux" ]]; then
+  chown -R "${FOTON_USER}:${FOTON_USER}" "${WORKSPACE_DIR}/Linux" || true
+fi
+
+# ---------- FIXED: Proper startup sequence with waits ----------
+if ! command -v tmux >/dev/null 2>&1; then
+  log "tmux missing; installing..."
+  apt-get install -y tmux
+fi
+
+# Kill existing session
+if tmux has-session -t "${SESSION_NAME}" 2>/dev/null; then
+  log "Killing existing tmux session ${SESSION_NAME}"
+  tmux kill-session -t "${SESSION_NAME}"
+fi
+
+log "Creating tmux session ${SESSION_NAME}"
+tmux new-session -d -s "${SESSION_NAME}" -n turn
+
+# STEP 1: Start TURN server
+TURN_CMD="turnserver -n --listening-port=${TURN_LISTEN_PORT} --external-ip=${PUBLIC_IPADDR:-} --relay-ip=${LOCAL_IP:-} --user=${TURN_USER}:${TURN_PASS} --realm=${TURN_REALM} --no-tls --no-dtls -a -v"
+log "Starting TURN server..."
+tmux send-keys -t "${SESSION_NAME}:turn" "${TURN_CMD}" C-m
+
+# Wait for TURN to be ready
+sleep 3
+wait_for_port "${TURN_LISTEN_PORT}" 30 || log "TURN may not be ready, continuing anyway"
+
+# STEP 2: Start signalling server (use base ports from first instance)
+tmux new-window -t "${SESSION_NAME}" -n signaller
+PLAYER_PORT_1="${BASE_PLAYER}"
+STREAMER_PORT_1="${BASE_STREAMER}"
+SFU_PORT_1="${BASE_SFU}"
+
+if [[ -x "${SIGNALLER_START_SCRIPT}" ]]; then
+  SIGN_CMD="${SIGNALLER_START_SCRIPT} --player_port=${PLAYER_PORT_1} --streamer_port=${STREAMER_PORT_1} --sfu_port=${SFU_PORT_1}"
+  log "Starting signalling server (player=${PLAYER_PORT_1}, streamer=${STREAMER_PORT_1}, sfu=${SFU_PORT_1})..."
+  tmux send-keys -t "${SESSION_NAME}:signaller" "cd ${SIGNALLER_DIR} && ${SIGN_CMD} 2>&1 | tee ${LOG_DIR}/signaller.log" C-m
+  
+  # CRITICAL: Wait for signalling server to be ready
+  sleep 5
+  wait_for_port "${PLAYER_PORT_1}" 60 || log "WARNING: Signaller player port not ready"
+  wait_for_port "${STREAMER_PORT_1}" 60 || log "WARNING: Signaller streamer port not ready"
+  
+  # Additional wait to ensure full initialization
+  sleep 3
+  log "Signalling server ready"
+else
+  log "ERROR: Signaller start script not found: ${SIGNALLER_START_SCRIPT}"
+  tmux send-keys -t "${SESSION_NAME}:signaller" "echo 'Signaller script missing'" C-m
+fi
+
+# STEP 3: Start game instances (with delays between each)
+for i in $(seq 1 "${INSTANCES}"); do
+  PPORT=$((BASE_PLAYER + i - 1))
+  SPORT=$((BASE_STREAMER + i - 1))
+  SFUP=$((BASE_SFU + i - 1))
+  XVFB_DISPLAY=$((XVFB_BASE + i - 1))
+
+  log "Starting instance ${i}/${INSTANCES} (player=${PPORT}, streamer=${SPORT}, sfu=${SFUP})..."
+
+  # Create instance launcher script
+  INSTANCE_SCRIPT="${WORKSPACE_DIR}/.ps_start_instance_${i}.sh"
+  cat > "${INSTANCE_SCRIPT}" <<EOF
+#!/usr/bin/env bash
+export DISPLAY=":${XVFB_DISPLAY}"
+echo "Instance ${i} starting at \$(date)"
+echo "Connecting to ws://localhost:${SPORT}"
+
+# Run as foton user with xvfb
+sudo -H -u ${FOTON_USER} bash -lc "\
+  xvfb-run -n ${XVFB_DISPLAY} -s '-screen 0 ${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH}' \
+  '${GAME_LAUNCHER}' \
+  -RenderOffscreen \
+  -Vulkan \
+  -PixelStreamingEncoderCodec=H264 \
+  -PixelStreamingUrl=ws://localhost:${SPORT} \
+  -PixelStreamingWebRTCStartBitrate=2000000 \
+  -PixelStreamingWebRTCMinBitrate=1000000 \
+  -PixelStreamingWebRTCMaxBitrate=4000000 \
+  -PixelStreamingWebRTCMaxFps=30 \
+  -ExecCmds='r.TemporalAA.Upsampling 1,r.ScreenPercentage 50,r.TemporalAA.HistoryScreenPercentage 200' \
+  2>&1 | tee ${LOG_DIR}/game_${i}.log"
+EOF
+  chmod +x "${INSTANCE_SCRIPT}"
+
+  GW="game${i}"
+  tmux new-window -t "${SESSION_NAME}" -n "${GW}"
+  tmux send-keys -t "${SESSION_NAME}:${GW}" "bash ${INSTANCE_SCRIPT}" C-m
+
+  # Wait for game instance to initialize before starting next one
+  sleep 8
+  log "Instance ${i} launched, waiting before next..."
+done
+
+# STEP 4: Register all instances (after ALL games have started)
+log "Waiting 10s for all game instances to fully initialize before registration..."
+sleep 10
+
+for i in $(seq 1 "${INSTANCES}"); do
+  PPORT=$((BASE_PLAYER + i - 1))
+  SPORT=$((BASE_STREAMER + i - 1))
+  SFUP=$((BASE_SFU + i - 1))
+
+  log "Registering instance ${i}..."
+
+  REG_SCRIPT="${WORKSPACE_DIR}/.ps_register_${i}.sh"
+  cat > "${REG_SCRIPT}" <<EOF
+#!/usr/bin/env bash
+echo "Registering instance ${i} at \$(date)"
+cd \$(dirname "${SIGNALLER_REG_SCRIPT}") || exit 1
+
+${SIGNALLER_REG_SCRIPT} \
+  --player_port=${PPORT} \
+  --streamer_port=${SPORT} \
+  --sfu_port=${SFUP} \
+  --publicip ${PUBLIC_IPADDR:-} \
+  --turn ${PUBLIC_IPADDR:-}:${TURN_LISTEN_PORT} \
+  --turn-user ${TURN_USER} \
+  --turn-pass ${TURN_PASS} \
+  --stun stun.l.google.com:19302 \
+  2>&1 | tee ${LOG_DIR}/register_${i}.log
+
+echo "Registration complete for instance ${i}"
+tail -f ${LOG_DIR}/register_${i}.log
+EOF
+  chmod +x "${REG_SCRIPT}"
+
+  RW="reg${i}"
+  tmux new-window -t "${SESSION_NAME}" -n "${RW}"
+  tmux send-keys -t "${SESSION_NAME}:${RW}" "bash ${REG_SCRIPT}" C-m
+
+  # Small delay between registrations
+  sleep 2
+done
+
+log "=========================================="
+log "Provisioning complete!"
+log "Session: ${SESSION_NAME}"
+log "Instances: ${INSTANCES}"
+log "Player URL base: http://${PUBLIC_IPADDR}:${BASE_PLAYER}"
+log "=========================================="
+log "Attach: tmux attach -t ${SESSION_NAME}"
+log "Windows: tmux list-windows -t ${SESSION_NAME}"
+log "Logs: ${LOG_DIR}/"
+log "=========================================="
