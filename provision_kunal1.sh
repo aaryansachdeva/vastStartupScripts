@@ -13,7 +13,7 @@ IFS=$'\n\t'
 # ---------- Config (tweak if needed) ----------
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 LOG_DIR="${LOG_DIR:-${WORKSPACE_DIR}/logs}"
-INSTANCES="${INSTANCES:-2}"              # default instances (can override with -n)
+INSTANCES="${INSTANCES:-1}"              # default instances (can override with -n)
 SESSION_NAME="${SESSION_NAME:-pixel}"    # tmux session
 GAME_LAUNCHER="${GAME_LAUNCHER:-${WORKSPACE_DIR}/Linux/AudioTestProject02.sh}"
 SIGNALLER_DIR="${SIGNALLER_DIR:-${WORKSPACE_DIR}/PS_Next_Claude/WebServers/SignallingWebServer}"
@@ -41,7 +41,7 @@ SCREEN_HEIGHT="${SCREEN_HEIGHT:-1080}"
 SCREEN_DEPTH="${SCREEN_DEPTH:-24}"
 
 # Pixel flags (optional)
-PIXEL_FLAGS='-RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingH264Profile=BASELINE -PixelStreamingWebRTCStartBitrate=2000000 -PixelStreamingWebRTCMinBitrate=1000000 -PixelStreamingWebRTCMaxBitrate=4000000 -PixelStreamingWebRTCMaxFps=30'
+PIXEL_FLAGS='-RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingWebRTCStartBitrate=2000000 -PixelStreamingWebRTCMinBitrate=1000000 -PixelStreamingWebRTCMaxBitrate=4000000 -PixelStreamingWebRTCMaxFps=30'
 
 # Misc
 FOTON_USER="${FOTON_USER:-foton}"
@@ -183,9 +183,6 @@ if [[ ! -f "${SIGNALLER_REG_SCRIPT}" ]]; then
   fi
   chmod +x "${SIGNALLER_REG_SCRIPT}" || true
 fi
-
-find /workspace/ -name "*.sh" -exec chmod +x {} \;
-
 
 # ---------- Ensure foton user and ownership ----------
 if ! id -u "${FOTON_USER}" >/dev/null 2>&1; then
