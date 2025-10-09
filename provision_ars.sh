@@ -202,15 +202,28 @@ install_packages() {
     exit 1
   fi
   
-  # AWS CLI setup
+  # AWS CLI setup - always use pip to avoid urllib3 conflicts
   if [[ -n "${AWS_ACCESS_KEY:-}" && -n "${AWS_SECRET_KEY:-}" ]]; then
     if ! command -v aws >/dev/null 2>&1; then
-      if apt-get install -y -qq awscli 2>/dev/null; then
-        info "Installed awscli via apt"
-      else
-        info "Installing awscli via pip..."
-        python3 -m pip install --upgrade --quiet awscli || warn "pip install awscli failed"
+      info "Installing awscli via pip (avoids urllib3 conflicts)..."
+      # Remove apt version if it exists to prevent conflicts
+      apt-get remove -y -qq awscli 2>/dev/null || true
+      # Install via pip with compatible urllib3
+      python3 -m pip install --upgrade --quiet 'awscli' 'urllib3<2' 'botocore' || {
+        warn "pip install awscli failed, trying without urllib3 constraint..."
+        python3 -m pip install --upgrade --quiet awscli
+      }
+      export PATH="$PATH:$(python3 -m site --user-base)/bin"
+    else
+      # Verify aws works, if not reinstall via pip
+      if ! aws --version >/dev/null 2>&1; then
+        warn "aws CLI exists but doesn't work, reinstalling via pip..."
+        apt-get remove -y -qq awscli 2>/dev/null || true
+        python3 -m pip uninstall -y awscli botocore urllib3 2>/dev/null || true
+        python3 -m pip install --upgrade --quiet 'awscli' 'urllib3<2'
         export PATH="$PATH:$(python3 -m site --user-base)/bin"
+      else
+        info "aws CLI already working"
       fi
     fi
   else
@@ -234,6 +247,17 @@ download_from_s3() {
     return 1
   fi
   
+  # Test aws CLI before attempting download
+  if ! aws --version >/dev/null 2>&1; then
+    error "aws CLI installed but not working (dependency issue)"
+    info "Attempting to fix urllib3 compatibility..."
+    python3 -m pip install --upgrade --quiet 'urllib3<2' 2>/dev/null || true
+    if ! aws --version >/dev/null 2>&1; then
+      error "Could not fix aws CLI. Please manually download: ${s3path}"
+      return 1
+    fi
+  fi
+  
   info "Downloading ${s3path} -> ${dest}"
   if AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY}" \
      AWS_SECRET_ACCESS_KEY="${AWS_SECRET_KEY}" \
@@ -242,6 +266,7 @@ download_from_s3() {
     return 0
   else
     error "Download failed: ${s3path}"
+    error "Please verify: 1) AWS credentials are correct, 2) S3 path exists, 3) Permissions are set"
     return 1
   fi
 }
