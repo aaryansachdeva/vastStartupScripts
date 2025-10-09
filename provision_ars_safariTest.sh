@@ -13,7 +13,7 @@ IFS=$'\n\t'
 # ---------- Config (tweak if needed) ----------
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 LOG_DIR="${LOG_DIR:-${WORKSPACE_DIR}/logs}"
-INSTANCES="${INSTANCES:-2}"              # default instances (can override with -n)
+INSTANCES="${INSTANCES:-3}"              # default instances (can override with -n)
 SESSION_NAME="${SESSION_NAME:-pixel}"    # tmux session
 GAME_LAUNCHER="${GAME_LAUNCHER:-${WORKSPACE_DIR}/Linux/AudioTestProject02.sh}"
 SIGNALLER_DIR="${SIGNALLER_DIR:-${WORKSPACE_DIR}/PS_Next_Claude/WebServers/SignallingWebServer}"
@@ -54,7 +54,7 @@ mkdir -p "${LOG_DIR}" "${WORKSPACE_DIR}"
 usage() {
   cat <<EOF
 Usage: $0 [-n NUM_INSTANCES] [--skip-download] [--session NAME]
-Example: $0 -n 2 --session pixel
+Example: $0 -n 3 --session pixel
 EOF
   exit 1
 }
@@ -239,40 +239,40 @@ log "Starting TURN via tmux: ${TURN_CMD}"
 tmux send-keys -t "${SESSION_NAME}:turn" "echo 'Starting coturn...'; ${TURN_CMD}" C-m
 sleep 1
 
-# Start single signaller (use base ports from instance 1)
-tmux new-window -t "${SESSION_NAME}" -n signaller
-STREAMER_PORT_1="${BASE_STREAMER}"
-PLAYER_PORT_1="${BASE_PLAYER}"
-SFU_PORT_1="${BASE_SFU}"
-if [[ -x "${SIGNALLER_START_SCRIPT}" ]]; then
-  SIGN_CMD="${SIGNALLER_START_SCRIPT} --player_port=${PLAYER_PORT_1} --streamer_port=${STREAMER_PORT_1} --sfu_port=${SFU_PORT_1}"
-  log "Starting signaller in tmux: ${SIGN_CMD}"
-  # run via nohup so signaller keeps running even if it forks
-  tmux send-keys -t "${SESSION_NAME}:signaller" "cd ${SIGNALLER_DIR} || true; echo 'Starting signaller...'; nohup bash -lc '${SIGN_CMD}' > ${LOG_DIR}/signaller.log 2>&1 &; echo signaller-started; tail -n +1 ${LOG_DIR}/signaller.log" C-m
-  
-  # Wait for signaller to be ready (critical for Safari!)
-  log "Waiting for signaller to be ready on port ${STREAMER_PORT_1}..."
-  for attempt in $(seq 1 30); do
-    if ss -tln 2>/dev/null | grep -q ":${STREAMER_PORT_1} " || netstat -tln 2>/dev/null | grep -q ":${STREAMER_PORT_1} "; then
-      log "Signaller is ready on port ${STREAMER_PORT_1}"
-      sleep 2  # Extra buffer for full initialization
-      break
-    fi
-    if [ "$attempt" -eq 30 ]; then
-      log "WARNING: Signaller may not be ready (port ${STREAMER_PORT_1} not listening)"
-    fi
-    sleep 1
-  done
-else
-  tmux send-keys -t "${SESSION_NAME}:signaller" "echo 'Signaller start script missing: ${SIGNALLER_START_SCRIPT}'" C-m
-fi
-
-# Create per-instance wrapper scripts and tmux windows
+# Create per-instance signaller, game, and registration
 for i in $(seq 1 "${INSTANCES}"); do
   PPORT=$((BASE_PLAYER + i - 1))
   SPORT=$((BASE_STREAMER + i - 1))
   SFUP=$((BASE_SFU + i - 1))
   XVFB_DISPLAY=$((XVFB_BASE + i - 1))
+
+  log "Starting signaller ${i} on ports: player=${PPORT}, streamer=${SPORT}, sfu=${SFUP}"
+
+  # Create signalling server for THIS instance
+  SIGNALLER_WINDOW="signaller${i}"
+  tmux new-window -t "${SESSION_NAME}" -n "${SIGNALLER_WINDOW}"
+  
+  if [[ -x "${SIGNALLER_START_SCRIPT}" ]]; then
+    SIGN_CMD="${SIGNALLER_START_SCRIPT} --player_port=${PPORT} --streamer_port=${SPORT} --sfu_port=${SFUP}"
+    log "Starting signaller ${i} in tmux: ${SIGN_CMD}"
+    tmux send-keys -t "${SESSION_NAME}:${SIGNALLER_WINDOW}" "cd ${SIGNALLER_DIR} || true; echo 'Starting signaller ${i}...'; nohup bash -lc '${SIGN_CMD}' > ${LOG_DIR}/signaller_${i}.log 2>&1 &; echo signaller-${i}-started; tail -f ${LOG_DIR}/signaller_${i}.log" C-m
+    
+    # Wait for THIS signaller to be ready (critical for Safari!)
+    log "Waiting for signaller ${i} to be ready on port ${SPORT}..."
+    for attempt in $(seq 1 30); do
+      if ss -tln 2>/dev/null | grep -q ":${SPORT} " || netstat -tln 2>/dev/null | grep -q ":${SPORT} "; then
+        log "Signaller ${i} is ready on port ${SPORT}"
+        sleep 2  # Extra buffer for full initialization
+        break
+      fi
+      if [ "$attempt" -eq 30 ]; then
+        log "WARNING: Signaller ${i} may not be ready (port ${SPORT} not listening)"
+      fi
+      sleep 1
+    done
+  else
+    tmux send-keys -t "${SESSION_NAME}:${SIGNALLER_WINDOW}" "echo 'Signaller start script missing: ${SIGNALLER_START_SCRIPT}'" C-m
+  fi
 
   # create instance start script to avoid tricky quoting
   INSTANCE_SCRIPT="${WORKSPACE_DIR}/.ps_start_instance_${i}.sh"
@@ -297,9 +297,9 @@ for attempt in \$(seq 1 60); do
   sleep 1
 done
 
-# run as foton - xvfb-run ensures a virtual display for the game
-# Set proper environment and ensure H.264 baseline profile for Safari compatibility
-sudo -H -u ${FOTON_USER} bash -lc "export DISPLAY=:${XVFB_DISPLAY} && xvfb-run -n ${XVFB_DISPLAY} -s '-screen 0 ${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH}' '${GAME_LAUNCHER}' -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingH264Profile=BASELINE -PixelStreamingUrl=ws://localhost:${SPORT} -PixelStreamingWebRTCStartBitrate=2000000 -PixelStreamingWebRTCMinBitrate=1000000 -PixelStreamingWebRTCMaxBitrate=4000000 -PixelStreamingWebRTCMaxFps=30 -ExecCmds='r.TemporalAA.Upsampling 1,r.ScreenPercentage 50,r.TemporalAA.HistoryScreenPercentage 200'"
+# Use 'su - foton -c' to properly initialize login environment (CRITICAL for Safari!)
+# This sets up GPU/Vulkan drivers and display environment correctly
+su - ${FOTON_USER} -c "xvfb-run -n ${XVFB_DISPLAY} -s '-screen 0 ${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH}' '${GAME_LAUNCHER}' -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingH264Profile=BASELINE -PixelStreamingUrl=ws://localhost:${SPORT} -PixelStreamingWebRTCStartBitrate=2000000 -PixelStreamingWebRTCMinBitrate=1000000 -PixelStreamingWebRTCMaxBitrate=4000000 -PixelStreamingWebRTCMaxFps=30 -ExecCmds='r.TemporalAA.Upsampling 1,r.ScreenPercentage 50,r.TemporalAA.HistoryScreenPercentage 200'"
 EOF
   chmod +x "${INSTANCE_SCRIPT}"
 
@@ -322,7 +322,7 @@ sleep 5
 nohup bash -lc '${SIGNALLER_REG_SCRIPT} --player_port=${PPORT} --streamer_port=${SPORT} --sfu_port=${SFUP} --publicip ${PUBLIC_IPADDR:-} --turn ${PUBLIC_IPADDR:-}:${TURN_LISTEN_PORT} --turn-user ${TURN_USER} --turn-pass ${TURN_PASS} --stun stun.l.google.com:19302' > ${LOG_DIR}/register_${i}.log 2>&1 &
 # tail registration log to make it visible in tmux window
 sleep 1
-tail -n +1 -f ${LOG_DIR}/register_${i}.log
+tail -f ${LOG_DIR}/register_${i}.log
 EOF
   chmod +x "${REG_SCRIPT}"
 
