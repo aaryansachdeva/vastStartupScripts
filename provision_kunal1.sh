@@ -41,7 +41,7 @@ SCREEN_HEIGHT="${SCREEN_HEIGHT:-1080}"
 SCREEN_DEPTH="${SCREEN_DEPTH:-24}"
 
 # Pixel flags (optional)
-PIXEL_FLAGS='-RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingWebRTCStartBitrate=2000000 -PixelStreamingWebRTCMinBitrate=1000000 -PixelStreamingWebRTCMaxBitrate=4000000 -PixelStreamingWebRTCMaxFps=30'
+PIXEL_FLAGS='-RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingH264Profile=BASELINE -PixelStreamingWebRTCStartBitrate=2000000 -PixelStreamingWebRTCMinBitrate=1000000 -PixelStreamingWebRTCMaxBitrate=4000000 -PixelStreamingWebRTCMaxFps=30'
 
 # Misc
 FOTON_USER="${FOTON_USER:-foton}"
