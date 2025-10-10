@@ -193,7 +193,7 @@ for i in $(seq 1 "$INSTANCES"); do
   cat > "${WORKSPACE_DIR}/.register_${i}.sh" <<EOF
 #!/usr/bin/env bash
 cd ${SIGNALLER_DIR}/platform_scripts/bash
-./fotonInstanceRegister_vast.sh --player_port=${REG_PLAYER_PORT} --streamer_port=${REG_STREAMER_PORT} --sfu_port=${REG_SFU_PORT} --publicip ${PUBLIC_IPADDR} --turn ${PUBLIC_IPADDR}:${TURN_PUBLIC_PORT} --turn-user ${TURN_USER} --turn-pass ${TURN_PASS} --stun stun.l.google.com:19302 2>&1 | tee ${LOG_DIR}/register_${i}.log
+./fotonInstanceRegister_vast.sh --player_port=${REG_PLAYER_PORT} --streamer_port=${REG_STREAMER_PORT} --sfu_port=${REG_SFU_PORT} --publicip ${PUBLIC_IPADDR} --turn ${PUBLIC_IPADDR}:${TURN_PUBLIC_PORT} --turn-user ${TURN_USER} --turn-pass ${TURN_PASS} --stun stun.l.google.com:19302 --server_url=https://test.fotonlabs.com 2>&1 | tee ${LOG_DIR}/register_${i}.log
 tail -f ${LOG_DIR}/register_${i}.log
 EOF
   chmod +x "${WORKSPACE_DIR}/.register_${i}.sh"
