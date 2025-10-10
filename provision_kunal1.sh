@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
+# Quick fix: Run this first to create the complete script
+
+cat > /workspace/provision_pixel.sh << 'ENDOFSCRIPT'
+#!/usr/bin/env bash
 #
 # provision_auto_start.sh
 # Full automated provisioning for Pixel Streaming on Vast.ai
-# - Uses tmux (byobu has terminal issues in automated scripts)
+# - Uses GNU Screen (reliable for automated scripts)
 # - Installs Node.js 20 LTS for signalling server
 # - Robust: fixes urllib3/botocore issues by using a venv awscli
 # - Ensures all .sh under /workspace are executable
@@ -15,8 +19,8 @@ IFS=$'\n\t'
 # ---------- Config (tweak if needed) ----------
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 LOG_DIR="${LOG_DIR:-${WORKSPACE_DIR}/logs}"
-INSTANCES="${INSTANCES:-1}"              # default instances (can override with -n)
-SESSION_NAME="${SESSION_NAME:-pixel}"    # tmux session
+INSTANCES="${INSTANCES:-1}"
+SESSION_NAME="${SESSION_NAME:-pixel}"
 GAME_LAUNCHER="${GAME_LAUNCHER:-${WORKSPACE_DIR}/Linux/AudioTestProject02.sh}"
 SIGNALLER_DIR="${SIGNALLER_DIR:-${WORKSPACE_DIR}/PS_Next_Claude/WebServers/SignallingWebServer}"
 SIGNALLER_START_SCRIPT="${SIGNALLER_START_SCRIPT:-${SIGNALLER_DIR}/platform_scripts/bash/start_with_turn.sh}"
@@ -25,43 +29,36 @@ S3_PATH_LINUX="${S3_PATH_LINUX:-s3://psfiles2/Linux1002.7z}"
 S3_PATH_PS="${S3_PATH_PS:-s3://psfiles2/PS_Next_Claude_904.7z}"
 AUX_SCRIPT_URL="${AUX_SCRIPT_URL:-https://raw.githubusercontent.com/aaryansachdeva/vastStartupScripts/main/fotonInstanceRegister_vast.sh}"
 
-# Ports (base values; each instance will increment)
-# NOTE: Signaller uses different ports than game instances!
-SIGNALLER_PLAYER_PORT="${SIGNALLER_PLAYER_PORT:-79}"     # Signaller player port (not used by game)
-SIGNALLER_STREAMER_PORT="${SIGNALLER_STREAMER_PORT:-8887}" # Signaller streamer port (not used by game)
-SIGNALLER_SFU_PORT="${SIGNALLER_SFU_PORT:-9887}"         # Signaller SFU port (not used by game)
-BASE_PLAYER="${BASE_PLAYER:-81}"                          # Game instance player port (for registration)
-BASE_STREAMER="${BASE_STREAMER:-8888}"                    # Game instance streamer port (what game connects to)
-BASE_SFU="${BASE_SFU:-9888}"                              # Game instance SFU port (for registration)
+# Ports
+SIGNALLER_PLAYER_PORT="${SIGNALLER_PLAYER_PORT:-79}"
+SIGNALLER_STREAMER_PORT="${SIGNALLER_STREAMER_PORT:-8887}"
+SIGNALLER_SFU_PORT="${SIGNALLER_SFU_PORT:-9887}"
+BASE_PLAYER="${BASE_PLAYER:-81}"
+BASE_STREAMER="${BASE_STREAMER:-8888}"
+BASE_SFU="${BASE_SFU:-9888}"
 TURN_LISTEN_PORT="${TURN_LISTEN_PORT:-19303}"
 
-# Check if running on Vast.ai and use mapped port
 if [[ -n "${VAST_UDP_PORT_19303:-}" ]]; then
   TURN_PUBLIC_PORT="${VAST_UDP_PORT_19303}"
-  log "Vast.ai detected - using mapped TURN port: ${TURN_PUBLIC_PORT}"
 else
   TURN_PUBLIC_PORT="${TURN_LISTEN_PORT}"
 fi
 
-# TURN / registration creds
+# TURN creds
 TURN_USER="${TURN_USER:-PixelStreamingUser}"
 TURN_PASS="${TURN_PASS:-AnotherTURNintheroad}"
 TURN_REALM="${TURN_REALM:-PixelStreaming}"
 
-# Display & rendering
+# Display
 XVFB_BASE="${XVFB_BASE:-90}"
 SCREEN_WIDTH="${SCREEN_WIDTH:-1920}"
 SCREEN_HEIGHT="${SCREEN_HEIGHT:-1080}"
 SCREEN_DEPTH="${SCREEN_DEPTH:-24}"
 
-# Pixel flags (optional)
 PIXEL_FLAGS='-RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingWebRTCStartBitrate=2000000 -PixelStreamingWebRTCMinBitrate=1000000 -PixelStreamingWebRTCMaxBitrate=4000000 -PixelStreamingWebRTCMaxFps=30'
 
-# Misc
 FOTON_USER="${FOTON_USER:-foton}"
 AWS_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
-
-# aws venv location (used when system aws is broken or missing)
 AWS_VENV_DIR="${WORKSPACE_DIR}/.venv_aws"
 AWS_VENV_BIN="${AWS_VENV_DIR}/bin/aws"
 
@@ -91,7 +88,7 @@ done
 
 log "Starting provisioning: session='${SESSION_NAME}', instances=${INSTANCES}"
 
-# ---------- Auto-detect PUBLIC_IPADDR and LOCAL_IP (best-effort) ----------
+# ---------- Auto-detect IPs ----------
 PUBLIC_IPADDR="${PUBLIC_IPADDR:-}"
 LOCAL_IP="${LOCAL_IP:-}"
 if [ -z "${PUBLIC_IPADDR}" ]; then
@@ -106,9 +103,8 @@ if [ -z "${LOCAL_IP}" ]; then
 fi
 log "PUBLIC_IPADDR=${PUBLIC_IPADDR:-<empty>} LOCAL_IP=${LOCAL_IP:-<empty>}"
 
-# ---------- Ensure Python venv with compatible awscli (fix botocore/urllib3 issues) ----------
+# ---------- Ensure awscli ----------
 ensure_aws_in_venv() {
-  # Prefer working system aws if present
   if command -v aws >/dev/null 2>&1; then
     if aws --version >/dev/null 2>&1; then
       AWS_VENV_BIN="$(command -v aws)"
@@ -117,18 +113,13 @@ ensure_aws_in_venv() {
     fi
   fi
 
-  # Create venv if missing or broken
   if [[ ! -x "${AWS_VENV_BIN}" ]]; then
-    log "Creating isolated venv for awscli at ${AWS_VENV_DIR}..."
-    python3 -m venv "${AWS_VENV_DIR}" || { log "python3 -m venv failed"; return 1; }
-    # shellcheck disable=SC1090
+    log "Creating venv for awscli..."
+    python3 -m venv "${AWS_VENV_DIR}" || return 1
     source "${AWS_VENV_DIR}/bin/activate"
     python3 -m pip install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
-    # pin awscli v1 and keep urllib3 < 2 to avoid DEFAULT_CIPHERS incompatibility
-    python3 -m pip install --no-cache-dir "awscli==1.42.48" "urllib3<2" >/dev/null 2>&1 || {
-      log "Failed to install awscli into venv; attempting unpinned install..."
-      python3 -m pip install --no-cache-dir awscli >/dev/null 2>&1 || { log "awscli install failed"; deactivate 2>/dev/null || true; return 1; }
-    }
+    python3 -m pip install --no-cache-dir "awscli==1.42.48" "urllib3<2" >/dev/null 2>&1 || \
+      python3 -m pip install --no-cache-dir awscli >/dev/null 2>&1 || { deactivate 2>/dev/null || true; return 1; }
     deactivate 2>/dev/null || true
   fi
 
@@ -136,402 +127,206 @@ ensure_aws_in_venv() {
     log "Using venv aws at ${AWS_VENV_BIN}"
     return 0
   fi
-
-  log "No usable aws CLI available"
   return 1
 }
 
-# Prepare venv/aws before any S3 work
-ensure_aws_in_venv || log "Warning: aws venv not available; S3 downloads may be skipped"
+ensure_aws_in_venv || log "Warning: aws venv not available"
 
-# ---------- Download helper using venv/aws when possible ----------
+# ---------- Download helper ----------
 download_from_s3() {
   local s3path="$1"; local dest="$2"
   if [[ -z "${AWS_ACCESS_KEY:-}" || -z "${AWS_SECRET_KEY:-}" ]]; then
-    log "Skipping S3 download for ${s3path} (no AWS_ACCESS_KEY/AWS_SECRET_KEY in env)"
+    log "Skipping S3 download (no creds)"
     return 2
   fi
 
   if [[ -x "${AWS_VENV_BIN}" ]]; then
-    log "Downloading ${s3path} -> ${dest} using ${AWS_VENV_BIN}"
     AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY}" AWS_SECRET_ACCESS_KEY="${AWS_SECRET_KEY}" \
-      "${AWS_VENV_BIN}" --region "${AWS_REGION}" s3 cp "${s3path}" "${dest}" --no-progress || { log "aws s3 cp failed for ${s3path}"; return 1; }
+      "${AWS_VENV_BIN}" --region "${AWS_REGION}" s3 cp "${s3path}" "${dest}" --no-progress || return 1
     return 0
-  elif command -v aws >/dev/null 2>&1; then
-    log "Downloading ${s3path} -> ${dest} using system aws"
-    AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY}" AWS_SECRET_ACCESS_KEY="${AWS_SECRET_KEY}" \
-      aws --region "${AWS_REGION}" s3 cp "${s3path}" "${dest}" --no-progress || { log "system aws s3 cp failed for ${s3path}"; return 1; }
-    return 0
-  else
-    log "No aws CLI available to download ${s3path}"
-    return 2
   fi
+  return 2
 }
 
-# ---------- Install required packages (best-effort) ----------
-log "Updating apt and installing packages..."
+# ---------- Install packages ----------
+log "Installing packages..."
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq || log "apt-get update failed"
-apt-get install -y -qq p7zip-full python3-pip curl wget screen coturn xvfb x11-apps mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg ca-certificates gnupg || {
-  log "apt install returned non-zero; retrying without -qq for visibility..."
-  apt-get install -y p7zip-full python3-pip curl wget screen coturn xvfb x11-apps mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg ca-certificates gnupg || log "apt-get install failed"
-}
+apt-get update -qq || true
+apt-get install -y -qq p7zip-full python3-pip curl wget screen coturn xvfb x11-apps mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg ca-certificates gnupg || \
+  apt-get install -y p7zip-full python3-pip curl wget screen coturn xvfb x11-apps mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg ca-certificates gnupg
 
-# ensure 7z present
-if ! command -v 7z >/dev/null 2>&1; then
-  log "7z missing after install; will skip extraction"
-fi
-
-# ---------- Install Node.js 20 LTS (CRITICAL for signalling server) ----------
+# ---------- Install Node.js 20 ----------
 log "Checking Node.js version..."
 CURRENT_NODE_VERSION=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1 || echo "0")
 
 if [ "$CURRENT_NODE_VERSION" -lt 18 ]; then
-  log "Node.js v${CURRENT_NODE_VERSION} is too old. Installing Node.js 20 LTS..."
-  
-  # Remove old nodejs/npm
+  log "Installing Node.js 20 LTS..."
   apt-get remove -y nodejs npm 2>/dev/null || true
-  apt-get autoremove -y 2>/dev/null || true
-  
-  # Install Node.js 20 LTS using NodeSource
-  log "Installing Node.js 20 LTS from NodeSource..."
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash - || {
-    log "NodeSource setup failed, trying manual method..."
     mkdir -p /etc/apt/keyrings
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
     apt-get update -qq
   }
-  
-  apt-get install -y nodejs || {
-    log "Failed to install Node.js from NodeSource, trying alternative..."
-    # Try using n version manager as fallback
-    npm install -g n 2>/dev/null && n lts || log "All Node.js install methods failed"
-  }
-  
-  # Update PATH
+  apt-get install -y nodejs
   export PATH="/usr/local/bin:$PATH"
   hash -r 2>/dev/null || true
-  
-  # Verify installation
-  NEW_NODE_VERSION=$(node --version 2>/dev/null || echo "not installed")
-  log "Node.js version after install: ${NEW_NODE_VERSION}"
-  log "npm version after install: $(npm --version 2>/dev/null || echo 'not installed')"
-  
-  if ! command -v node >/dev/null 2>&1 || [ "$(node --version | sed 's/v//' | cut -d. -f1)" -lt 18 ]; then
-    log "⚠️  CRITICAL: Node.js 18+ installation FAILED!"
-    log "⚠️  Signalling server will NOT work. Please install Node.js 18+ manually."
-  else
-    log "✅ Node.js $(node --version) installed successfully"
-  fi
+  log "Node.js: $(node --version 2>/dev/null || echo 'FAILED')"
+  log "npm: $(npm --version 2>/dev/null || echo 'FAILED')"
 else
-  log "✅ Node.js v${CURRENT_NODE_VERSION} is acceptable (>= 18)"
+  log "Node.js v${CURRENT_NODE_VERSION} OK"
 fi
 
-# ---------- Download and extract archives (if requested) ----------
+# ---------- Download and extract ----------
 if [ "${SKIP_DOWNLOAD:-0}" -eq 0 ]; then
   for s3 in "${S3_PATH_LINUX}" "${S3_PATH_PS}"; do
     fname="$(basename "${s3}")"
     dest="${WORKSPACE_DIR}/${fname}"
-    if [[ -f "${dest}" ]]; then
-      log "Archive already present: ${dest}"
-      continue
-    fi
-    if download_from_s3 "${s3}" "${dest}"; then
-      log "Downloaded ${fname}."
-    else
-      log "⚠️ Failed to download ${fname}"
-    fi
+    [[ -f "${dest}" ]] && continue
+    download_from_s3 "${s3}" "${dest}" && log "Downloaded ${fname}" || log "Failed ${fname}"
   done
 
   extract_if_present() {
     local archive="$1" outdir="${2:-${WORKSPACE_DIR}}"
-    if [[ -f "${archive}" ]]; then
-      log "Extracting ${archive} -> ${outdir}"
-      mkdir -p "${outdir}"
-      if 7z x "${archive}" -o"${outdir}" -y >/dev/null 2>&1; then
-        log "Extraction OK: ${archive}"
-      else
-        log "Extraction failed for ${archive} — retrying verbosely"
-        7z x "${archive}" -o"${outdir}"
-      fi
-    else
-      log "Archive not found: ${archive} (skip)"
-    fi
+    [[ -f "${archive}" ]] || return
+    log "Extracting ${archive}..."
+    mkdir -p "${outdir}"
+    7z x "${archive}" -o"${outdir}" -y >/dev/null 2>&1 || 7z x "${archive}" -o"${outdir}"
   }
 
   extract_if_present "${WORKSPACE_DIR}/$(basename "${S3_PATH_LINUX}")"
   extract_if_present "${WORKSPACE_DIR}/$(basename "${S3_PATH_PS}")"
-else
-  log "Skipping downloads/extraction (SKIP_DOWNLOAD set)"
 fi
 
-# ---------- Fetch registration script if missing ----------
+# ---------- Fetch registration script ----------
 mkdir -p "$(dirname "${SIGNALLER_REG_SCRIPT}")"
 if [[ ! -f "${SIGNALLER_REG_SCRIPT}" ]]; then
-  log "Fetching registration script -> ${SIGNALLER_REG_SCRIPT}"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "${AUX_SCRIPT_URL}" -o "${SIGNALLER_REG_SCRIPT}" || wget -q -O "${SIGNALLER_REG_SCRIPT}" "${AUX_SCRIPT_URL}" || log "Failed to fetch registration script"
-  else
-    wget -q -O "${SIGNALLER_REG_SCRIPT}" "${AUX_SCRIPT_URL}" || log "Failed to fetch registration script"
-  fi
+  log "Fetching registration script..."
+  curl -fsSL "${AUX_SCRIPT_URL}" -o "${SIGNALLER_REG_SCRIPT}" || wget -q -O "${SIGNALLER_REG_SCRIPT}" "${AUX_SCRIPT_URL}"
   chmod +x "${SIGNALLER_REG_SCRIPT}" || true
 fi
 
-# ---------- Ensure all .sh in workspace are executable ----------
-log "Making all .sh files under ${WORKSPACE_DIR} executable..."
-find "${WORKSPACE_DIR}" -type f -name "*.sh" -exec chmod +x {} \; 2>/dev/null || log "find+chmod had issues"
-log "All .sh files chmodded ✅"
+# ---------- Make scripts executable ----------
+log "Making scripts executable..."
+find "${WORKSPACE_DIR}" -type f -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
 
-# ---------- Ensure signaller npm deps ----------
+# ---------- Install npm deps ----------
 if [[ -d "${SIGNALLER_DIR}" && -f "${SIGNALLER_DIR}/package.json" ]]; then
-  log "Installing npm dependencies for SignallingWebServer..."
-  pushd "${SIGNALLER_DIR}" >/dev/null 2>&1 || true
-  
-  # Verify Node.js version before npm install
+  log "Installing npm dependencies..."
+  pushd "${SIGNALLER_DIR}" >/dev/null || true
   NODE_VER=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1 || echo "0")
   if [ "$NODE_VER" -ge 18 ]; then
-    log "Node.js $(node --version) - installing npm packages..."
-    
-    # Try npm ci first (faster, more reliable), fall back to npm install
-    # Suppress EBADENGINE warnings as they're just noise
-    if npm ci 2>&1 | grep -v "EBADENGINE" | tee /tmp/npm_install.log | grep -q "added\|up to date"; then
-      log "✅ npm ci completed"
-    elif npm install 2>&1 | grep -v "EBADENGINE" | tee /tmp/npm_install.log | grep -q "added\|up to date"; then
-      log "✅ npm install completed"
-    else
-      log "⚠️  npm install had issues but continuing..."
-      tail -20 /tmp/npm_install.log 2>/dev/null || true
-    fi
+    npm ci 2>&1 | grep -v "EBADENGINE" || npm install 2>&1 | grep -v "EBADENGINE"
+    log "npm install complete"
   else
-    log "⚠️  CRITICAL: Node.js v${NODE_VER} is too old (need >=18)"
-    log "    Skipping npm install - signalling server WILL FAIL!"
+    log "WARNING: Node.js v${NODE_VER} too old!"
   fi
-  
-  popd >/dev/null 2>&1 || true
-else
-  log "No package.json found in ${SIGNALLER_DIR}; skipping npm install"
+  popd >/dev/null || true
 fi
 
-# ---------- Ensure foton user and ownership ----------
+# ---------- Create foton user ----------
 if ! id -u "${FOTON_USER}" >/dev/null 2>&1; then
   log "Creating user ${FOTON_USER}"
   useradd -m "${FOTON_USER}" || true
 fi
-if [[ -d "${WORKSPACE_DIR}/Linux" ]]; then
-  chown -R "${FOTON_USER}:${FOTON_USER}" "${WORKSPACE_DIR}/Linux" || true
-fi
+[[ -d "${WORKSPACE_DIR}/Linux" ]] && chown -R "${FOTON_USER}:${FOTON_USER}" "${WORKSPACE_DIR}/Linux" || true
 
-# ---------- Screen orchestration ----------
+# ---------- Screen session ----------
 if ! command -v screen >/dev/null 2>&1; then
-  log "screen missing; please install screen"; exit 1
+  log "ERROR: screen not installed!"
+  exit 1
 fi
 
-# Kill existing session if any
-if screen -ls | grep -q "\.${SESSION_NAME}[[:space:]]"; then
-  log "Killing existing screen session ${SESSION_NAME}"
+if screen -ls | grep -q "\.${SESSION_NAME}"; then
+  log "Killing existing session ${SESSION_NAME}"
   screen -S "${SESSION_NAME}" -X quit 2>/dev/null || true
   sleep 1
 fi
 
 log "Creating screen session ${SESSION_NAME}"
-# Create detached screen session
 screen -dmS "${SESSION_NAME}"
 
-# STEP 1: Start TURN server FIRST (this is critical!)
+# Start TURN
 screen -S "${SESSION_NAME}" -X title "turn"
 TURN_CMD="turnserver -n --listening-port=${TURN_LISTEN_PORT} --external-ip=${PUBLIC_IPADDR:-} --relay-ip=${LOCAL_IP:-} --user=${TURN_USER}:${TURN_PASS} --realm=${TURN_REALM} --no-tls --no-dtls -a -v"
-log "Starting TURN server: ${TURN_CMD}"
+log "Starting TURN..."
 screen -S "${SESSION_NAME}" -p "turn" -X stuff "${TURN_CMD} > ${LOG_DIR}/turnserver.out 2>&1 & echo 'TURN started'; sleep 2; tail -f ${LOG_DIR}/turnserver.out^M"
-sleep 3  # Wait for TURN to initialize
+sleep 3
 
-# STEP 2: Start signaller with its own ports
+# Start signaller
 screen -S "${SESSION_NAME}" -X screen -t "signaller"
 if [[ -x "${SIGNALLER_START_SCRIPT}" ]]; then
   SIGN_CMD="${SIGNALLER_START_SCRIPT} --player_port=${SIGNALLER_PLAYER_PORT} --streamer_port=${SIGNALLER_STREAMER_PORT} --sfu_port=${SIGNALLER_SFU_PORT}"
-  log "Starting signaller: player=${SIGNALLER_PLAYER_PORT}, streamer=${SIGNALLER_STREAMER_PORT}, sfu=${SIGNALLER_SFU_PORT}"
-  screen -S "${SESSION_NAME}" -p "signaller" -X stuff "cd ${SIGNALLER_DIR} && echo 'Starting signaller...'; ${SIGN_CMD} 2>&1 | tee ${LOG_DIR}/signaller.log^M"
-  sleep 5  # Wait for signaller to initialize
+  log "Starting signaller..."
+  screen -S "${SESSION_NAME}" -p "signaller" -X stuff "cd ${SIGNALLER_DIR} && ${SIGN_CMD} 2>&1 | tee ${LOG_DIR}/signaller.log^M"
+  sleep 5
 else
-  log "ERROR: Signaller start script not found: ${SIGNALLER_START_SCRIPT}"
-  screen -S "${SESSION_NAME}" -p "signaller" -X stuff "echo 'Signaller script missing: ${SIGNALLER_START_SCRIPT}'^M"
+  log "ERROR: Signaller not found!"
 fi
 
-# STEP 3: Add nvidia-smi monitoring window (optional but useful)
+# nvidia monitoring
 screen -S "${SESSION_NAME}" -X screen -t "nvidia"
 screen -S "${SESSION_NAME}" -p "nvidia" -X stuff "nvidia-smi dmon -s um -d 1^M"
 
-# STEP 4: Launch game instances (with delays between each)
+# Launch game instances
 for i in $(seq 1 "${INSTANCES}"); do
   PPORT=$((BASE_PLAYER + i - 1))
   SPORT=$((BASE_STREAMER + i - 1))
   SFUP=$((BASE_SFU + i - 1))
   XVFB_DISPLAY=$((XVFB_BASE + i - 1))
 
-  log "Preparing instance ${i}/${INSTANCES} (player=${PPORT}, streamer=${SPORT}, sfu=${SFUP})..."
+  log "Starting instance ${i}..."
 
-  # Create instance start script
-  INSTANCE_SCRIPT="${WORKSPACE_DIR}/.ps_start_instance_${i}.sh"
+  INSTANCE_SCRIPT="${WORKSPACE_DIR}/.ps_start_${i}.sh"
   cat > "${INSTANCE_SCRIPT}" <<EOF
 #!/usr/bin/env bash
 export DISPLAY=":${XVFB_DISPLAY}"
-echo "Instance ${i} starting at \$(date)"
-echo "Connecting to ws://localhost:${SPORT}"
-
-# Run as foton user with xvfb
-sudo -H -u ${FOTON_USER} bash -lc "\
-  xvfb-run -n ${XVFB_DISPLAY} -s '-screen 0 ${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH}' \
-  '${GAME_LAUNCHER}' \
-  -RenderOffscreen \
-  -Vulkan \
-  -PixelStreamingEncoderCodec=H264 \
-  -PixelStreamingUrl=ws://localhost:${SPORT} \
-  -PixelStreamingWebRTCStartBitrate=2000000 \
-  -PixelStreamingWebRTCMinBitrate=1000000 \
-  -PixelStreamingWebRTCMaxBitrate=4000000 \
-  -PixelStreamingWebRTCMaxFps=30 \
-  -ExecCmds='r.TemporalAA.Upsampling 1,r.ScreenPercentage 50,r.TemporalAA.HistoryScreenPercentage 200' \
-  2>&1 | tee ${LOG_DIR}/game_${i}.log"
+echo "Instance ${i} starting..."
+sudo -H -u ${FOTON_USER} bash -lc "xvfb-run -n ${XVFB_DISPLAY} -s '-screen 0 ${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH}' '${GAME_LAUNCHER}' -RenderOffscreen -Vulkan -PixelStreamingEncoderCodec=H264 -PixelStreamingUrl=ws://localhost:${SPORT} -PixelStreamingWebRTCStartBitrate=2000000 -PixelStreamingWebRTCMinBitrate=1000000 -PixelStreamingWebRTCMaxBitrate=4000000 -PixelStreamingWebRTCMaxFps=30 -ExecCmds='r.TemporalAA.Upsampling 1,r.ScreenPercentage 50,r.TemporalAA.HistoryScreenPercentage 200' 2>&1 | tee ${LOG_DIR}/game_${i}.log"
 EOF
-  chmod +x "${INSTANCE_SCRIPT}" || true
+  chmod +x "${INSTANCE_SCRIPT}"
 
-  # Create new window for game instance
-  GW="game${i}"
-  screen -S "${SESSION_NAME}" -X screen -t "${GW}"
-  screen -S "${SESSION_NAME}" -p "${GW}" -X stuff "bash ${INSTANCE_SCRIPT}^M"
-  
-  sleep 5  # Wait for game to start before launching next instance
+  screen -S "${SESSION_NAME}" -X screen -t "game${i}"
+  screen -S "${SESSION_NAME}" -p "game${i}" -X stuff "bash ${INSTANCE_SCRIPT}^M"
+  sleep 5
 done
 
-# STEP 5: Wait for all games to fully initialize
-log "Waiting 10s for all game instances to fully initialize..."
+log "Waiting 10s for games to initialize..."
 sleep 10
 
-# STEP 6: Register all instances (after ALL games have started)
+# Register instances
 for i in $(seq 1 "${INSTANCES}"); do
   PPORT=$((BASE_PLAYER + i - 1))
   SPORT=$((BASE_STREAMER + i - 1))
   SFUP=$((BASE_SFU + i - 1))
 
-  log "Registering instance ${i} (player=${PPORT}, streamer=${SPORT}, sfu=${SFUP})..."
+  log "Registering instance ${i}..."
 
-  # Registration wrapper script
   REG_SCRIPT="${WORKSPACE_DIR}/.ps_register_${i}.sh"
   cat > "${REG_SCRIPT}" <<EOF
 #!/usr/bin/env bash
-echo "Registering instance ${i} at \$(date)"
 cd \$(dirname "${SIGNALLER_REG_SCRIPT}") || exit 1
-
-# Use Vast.ai mapped port if available, otherwise use direct port
-TURN_PORT="${TURN_PUBLIC_PORT}"
-
-${SIGNALLER_REG_SCRIPT} \
-  --player_port=${PPORT} \
-  --streamer_port=${SPORT} \
-  --sfu_port=${SFUP} \
-  --publicip ${PUBLIC_IPADDR:-} \
-  --turn ${PUBLIC_IPADDR:-}:\${TURN_PORT} \
-  --turn-user ${TURN_USER} \
-  --turn-pass ${TURN_PASS} \
-  --stun stun.l.google.com:19302 \
-  2>&1 | tee ${LOG_DIR}/register_${i}.log
-
-echo "Registration complete for instance ${i}"
+${SIGNALLER_REG_SCRIPT} --player_port=${PPORT} --streamer_port=${SPORT} --sfu_port=${SFUP} --publicip ${PUBLIC_IPADDR} --turn ${PUBLIC_IPADDR}:${TURN_PUBLIC_PORT} --turn-user ${TURN_USER} --turn-pass ${TURN_PASS} --stun stun.l.google.com:19302 2>&1 | tee ${LOG_DIR}/register_${i}.log
 tail -f ${LOG_DIR}/register_${i}.log
 EOF
-  chmod +x "${REG_SCRIPT}" || true
+  chmod +x "${REG_SCRIPT}"
 
-  # Create new window for registration
-  RW="reg${i}"
-  screen -S "${SESSION_NAME}" -X screen -t "${RW}"
-  screen -S "${SESSION_NAME}" -p "${RW}" -X stuff "bash ${REG_SCRIPT}^M"
-
-  sleep 2  # Small delay between registrations
+  screen -S "${SESSION_NAME}" -X screen -t "reg${i}"
+  screen -S "${SESSION_NAME}" -p "reg${i}" -X stuff "bash ${REG_SCRIPT}^M"
+  sleep 2
 done
 
-log "✅ All ${INSTANCES} instance(s) launched in screen session '${SESSION_NAME}'."
+log "✅ Provisioning complete!"
 log ""
-log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log "📺 SCREEN COMMANDS"
-log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log "Attach: screen -r ${SESSION_NAME}"
+log "Player: http://${PUBLIC_IPADDR}:${BASE_PLAYER}"
+log "TURN: ${PUBLIC_IPADDR}:${TURN_PUBLIC_PORT}"
 log ""
-log "🔗 Attach to session:"
-log "   screen -r ${SESSION_NAME}"
-log ""
-log "📋 List all sessions:"
-log "   screen -ls"
-log ""
-log "🪟 List windows in session:"
-log "   screen -S ${SESSION_NAME} -X windows"
-log ""
-log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log "⌨️  INSIDE SCREEN SESSION - KEYBOARD SHORTCUTS"
-log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log ""
-log "   Ctrl+a c     - Create new window"
-log "   Ctrl+a n     - Next window"
-log "   Ctrl+a p     - Previous window"
-log "   Ctrl+a \"     - List all windows (interactive)"
-log "   Ctrl+a S     - Split horizontal"
-log "   Ctrl+a |     - Split vertical"
-log "   Ctrl+a d     - Detach session"
-log "   Ctrl+a A     - Rename current window"
-log "   Ctrl+a Tab   - Switch between splits"
-log ""
-log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log "📁 LOG FILES"
-log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log ""
-log "   ${LOG_DIR}/turnserver.out"
-log "   ${LOG_DIR}/signaller.log"
-for i in $(seq 1 "${INSTANCES}"); do
-log "   ${LOG_DIR}/game_${i}.log"
-log "   ${LOG_DIR}/register_${i}.log"
-done
-log ""
-log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log "🌐 ACCESS"
-log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log ""
-log "   Player URL: http://${PUBLIC_IPADDR}:${BASE_PLAYER}"
-log "   TURN Server: ${PUBLIC_IPADDR}:${TURN_PUBLIC_PORT}"
-log "   Signaller Player: ${PUBLIC_IPADDR}:${SIGNALLER_PLAYER_PORT}"
-log ""
-log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log ""
-log "🔍 TROUBLESHOOTING"
-log ""
-log "Check TURN server status:"
-log "   tail -f ${LOG_DIR}/turnserver.out"
-log ""
-log "Check signaller status:"
-log "   tail -f ${LOG_DIR}/signaller.log"
-log ""
-log "Check game instance logs:"
-log "   tail -f ${LOG_DIR}/game_1.log"
-log ""
-log "Check registration status:"
-log "   tail -f ${LOG_DIR}/register_1.log"
-log ""
-log "Test TURN connectivity:"
-log "   turnutils-uclient -v -u ${TURN_USER} -w ${TURN_PASS} ${PUBLIC_IPADDR}:${TURN_LISTEN_PORT}"
-log ""
-log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log "📁 LOG FILES"
-log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log ""
-log "   ${LOG_DIR}/turnserver.out"
-log "   ${LOG_DIR}/signaller.log"
-for i in $(seq 1 "${INSTANCES}"); do
-log "   ${LOG_DIR}/register_${i}.log"
-done
-log ""
-log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log "🌐 ACCESS"
-log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log ""
-log "   Player URL: http://${PUBLIC_IPADDR}:${BASE_PLAYER}"
-log "   TURN: ${PUBLIC_IPADDR}:${TURN_LISTEN_PORT}"
-log ""
-log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log "Logs: ${LOG_DIR}/"
+ENDOFSCRIPT
+
+chmod +x /workspace/provision_pixel.sh
+echo "✅ Script created at /workspace/provision_pixel.sh"
+echo ""
+echo "Run it with:"
+echo "  /workspace/provision_pixel.sh -n 3"
