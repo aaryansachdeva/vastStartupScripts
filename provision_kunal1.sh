@@ -13,7 +13,7 @@ IFS=$'\n\t'
 # ---------- Config (tweak if needed) ----------
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 LOG_DIR="${LOG_DIR:-${WORKSPACE_DIR}/logs}"
-INSTANCES="${INSTANCES:-1}"              
+INSTANCES="${INSTANCES:-3}"              
 SESSION_NAME="${SESSION_NAME:-pixel}"    
 GAME_LAUNCHER="${GAME_LAUNCHER:-${WORKSPACE_DIR}/Linux/AudioTestProject02.sh}"
 SIGNALLER_DIR="${SIGNALLER_DIR:-${WORKSPACE_DIR}/PS_Next_Claude/WebServers/SignallingWebServer}"
