@@ -6,7 +6,7 @@ set -euo pipefail
 # ========== CONFIG ==========
 WORKSPACE_DIR="/workspace"
 LOG_DIR="${WORKSPACE_DIR}/logs"
-INSTANCES="${1:-1}"  # Default 1 instance, override with: ./script.sh 3
+INSTANCES="${3:-1}"  # Default 1 instance, override with: ./script.sh 3
 SESSION_NAME="pixel"
 
 # Paths
