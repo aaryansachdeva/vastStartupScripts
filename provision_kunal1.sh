@@ -2,11 +2,11 @@
 #
 # provision_auto_start.sh
 # Full automated provisioning for Pixel Streaming on Vast.ai
-# - Uses GNU Screen instead of tmux
+# - Uses Byobu (wrapper around tmux/screen with better UI)
 # - Robust: fixes urllib3/botocore issues by using a venv awscli
 # - Ensures all .sh under /workspace are executable
 # - Installs npm deps for signaller
-# - Starts coturn, signaller, game instances, and registers them (screen)
+# - Starts coturn, signaller, game instances, and registers them (byobu)
 #
 set -euo pipefail
 IFS=$'\n\t'
@@ -14,8 +14,8 @@ IFS=$'\n\t'
 # ---------- Config (tweak if needed) ----------
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 LOG_DIR="${LOG_DIR:-${WORKSPACE_DIR}/logs}"
-INSTANCES="${INSTANCES:-3}"              # default instances (can override with -n)
-SESSION_NAME="${SESSION_NAME:-pixel}"    # screen session
+INSTANCES="${INSTANCES:-1}"              # default instances (can override with -n)
+SESSION_NAME="${SESSION_NAME:-pixel}"    # byobu session
 GAME_LAUNCHER="${GAME_LAUNCHER:-${WORKSPACE_DIR}/Linux/AudioTestProject02.sh}"
 SIGNALLER_DIR="${SIGNALLER_DIR:-${WORKSPACE_DIR}/PS_Next_Claude/WebServers/SignallingWebServer}"
 SIGNALLER_START_SCRIPT="${SIGNALLER_START_SCRIPT:-${SIGNALLER_DIR}/platform_scripts/bash/start_with_turn.sh}"
@@ -58,25 +58,27 @@ mkdir -p "${LOG_DIR}" "${WORKSPACE_DIR}"
 
 usage() {
   cat <<EOF
-Usage: $0 [-n NUM_INSTANCES] [--skip-download] [--session NAME]
-Example: $0 -n 2 --session pixel
+Usage: $0 [-n NUM_INSTANCES] [--skip-download] [--session NAME] [--backend tmux|screen]
+Example: $0 -n 2 --session pixel --backend tmux
 EOF
   exit 1
 }
 
 # ---------- Arg parsing ----------
 SKIP_DOWNLOAD=0
+BYOBU_BACKEND="${BYOBU_BACKEND:-tmux}"  # default to tmux, can use screen
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -n) INSTANCES="$2"; shift 2;;
     --skip-download) SKIP_DOWNLOAD=1; shift;;
     --session) SESSION_NAME="$2"; shift 2;;
+    --backend) BYOBU_BACKEND="$2"; shift 2;;
     -h|--help) usage;;
     *) echo "Unknown arg: $1"; usage;;
   esac
 done
 
-log "Starting provisioning: session='${SESSION_NAME}', instances=${INSTANCES}"
+log "Starting provisioning: session='${SESSION_NAME}', instances=${INSTANCES}, backend=${BYOBU_BACKEND}"
 
 # ---------- Auto-detect PUBLIC_IPADDR and LOCAL_IP (best-effort) ----------
 PUBLIC_IPADDR="${PUBLIC_IPADDR:-}"
@@ -156,12 +158,12 @@ download_from_s3() {
 }
 
 # ---------- Install required packages (best-effort) ----------
-log "Updating apt and installing packages (p7zip, python3-pip, curl, wget, screen, coturn, xvfb, ffmpeg, nodejs)..."
+log "Updating apt and installing packages (p7zip, python3-pip, curl, wget, byobu, tmux, screen, coturn, xvfb, ffmpeg, nodejs)..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq || log "apt-get update failed"
-apt-get install -y -qq p7zip-full python3-pip curl wget screen coturn xvfb x11-apps mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg nodejs npm || {
+apt-get install -y -qq p7zip-full python3-pip curl wget byobu tmux screen coturn xvfb x11-apps mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg nodejs npm || {
   log "apt install returned non-zero; retrying without -qq for visibility..."
-  apt-get install -y p7zip-full python3-pip curl wget screen coturn xvfb x11-apps mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg nodejs npm || log "apt-get install failed"
+  apt-get install -y p7zip-full python3-pip curl wget byobu tmux screen coturn xvfb x11-apps mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg nodejs npm || log "apt-get install failed"
 }
 
 # ensure 7z present
@@ -243,40 +245,47 @@ if [[ -d "${WORKSPACE_DIR}/Linux" ]]; then
   chown -R "${FOTON_USER}:${FOTON_USER}" "${WORKSPACE_DIR}/Linux" || true
 fi
 
-# ---------- Screen orchestration ----------
-if ! command -v screen >/dev/null 2>&1; then
-  log "screen missing; please install screen (apt-get install screen)"; exit 1
+# ---------- Byobu orchestration ----------
+if ! command -v byobu >/dev/null 2>&1; then
+  log "byobu missing; please install byobu (apt-get install byobu)"; exit 1
 fi
 
+# Configure byobu to use specified backend (tmux or screen)
+export BYOBU_BACKEND="${BYOBU_BACKEND}"
+log "Configuring byobu to use backend: ${BYOBU_BACKEND}"
+
+# Set byobu backend preference
+mkdir -p ~/.byobu
+echo "${BYOBU_BACKEND}" > ~/.byobu/backend
+
 # Kill existing session if any
-if screen -ls | grep -q "\.${SESSION_NAME}[[:space:]]"; then
-  log "Killing existing screen session ${SESSION_NAME}"
-  screen -S "${SESSION_NAME}" -X quit 2>/dev/null || true
+if byobu list-sessions 2>/dev/null | grep -q "^${SESSION_NAME}:"; then
+  log "Killing existing byobu session ${SESSION_NAME}"
+  byobu kill-session -t "${SESSION_NAME}" 2>/dev/null || true
   sleep 1
 fi
 
-log "Creating screen session ${SESSION_NAME}"
-# Create detached screen session
-screen -dmS "${SESSION_NAME}"
+log "Creating byobu session ${SESSION_NAME} with ${BYOBU_BACKEND} backend"
+# Create new detached byobu session
+byobu new-session -d -s "${SESSION_NAME}" -n turn
 
-# Start turnserver in first window (rename it to 'turn')
+# Start turnserver in first window
 TURN_CMD="turnserver -n --listening-port=${TURN_LISTEN_PORT} --external-ip=${PUBLIC_IPADDR:-} --relay-ip=${LOCAL_IP:-} --user=${TURN_USER}:${TURN_PASS} --realm=${TURN_REALM} --no-tls --no-dtls -a -v"
-log "Starting TURN via screen: ${TURN_CMD}"
-screen -S "${SESSION_NAME}" -X title "turn"
-screen -S "${SESSION_NAME}" -p "turn" -X stuff "echo 'Starting coturn...'; nohup ${TURN_CMD} > ${LOG_DIR}/turnserver.out 2>&1 & sleep 1; tail -f ${LOG_DIR}/turnserver.out^M"
+log "Starting TURN via byobu: ${TURN_CMD}"
+byobu send-keys -t "${SESSION_NAME}:turn" "echo 'Starting coturn...'; nohup ${TURN_CMD} > ${LOG_DIR}/turnserver.out 2>&1 & sleep 1; tail -f ${LOG_DIR}/turnserver.out" C-m
 sleep 1
 
 # Create new window for signaller
-screen -S "${SESSION_NAME}" -X screen -t "signaller"
+byobu new-window -t "${SESSION_NAME}" -n signaller
 STREAMER_PORT_1="${BASE_STREAMER}"
 PLAYER_PORT_1="${BASE_PLAYER}"
 SFU_PORT_1="${BASE_SFU}"
 if [[ -x "${SIGNALLER_START_SCRIPT}" ]]; then
   SIGN_CMD="${SIGNALLER_START_SCRIPT} --player_port=${PLAYER_PORT_1} --streamer_port=${STREAMER_PORT_1} --sfu_port=${SFU_PORT_1}"
-  log "Starting signaller in screen: ${SIGN_CMD}"
-  screen -S "${SESSION_NAME}" -p "signaller" -X stuff "cd ${SIGNALLER_DIR} || true; echo 'Starting signaller...'; nohup bash -lc '${SIGN_CMD}' > ${LOG_DIR}/signaller.log 2>&1 & sleep 1; tail -f ${LOG_DIR}/signaller.log^M"
+  log "Starting signaller in byobu: ${SIGN_CMD}"
+  byobu send-keys -t "${SESSION_NAME}:signaller" "cd ${SIGNALLER_DIR} || true; echo 'Starting signaller...'; nohup bash -lc '${SIGN_CMD}' > ${LOG_DIR}/signaller.log 2>&1 & sleep 1; tail -f ${LOG_DIR}/signaller.log" C-m
 else
-  screen -S "${SESSION_NAME}" -p "signaller" -X stuff "echo 'Signaller start script missing: ${SIGNALLER_START_SCRIPT}'^M"
+  byobu send-keys -t "${SESSION_NAME}:signaller" "echo 'Signaller start script missing: ${SIGNALLER_START_SCRIPT}'" C-m
 fi
 
 # ---------- Launch instances and registration windows ----------
@@ -298,8 +307,8 @@ EOF
 
   # Create new window for game instance
   GW="game${i}"
-  screen -S "${SESSION_NAME}" -X screen -t "${GW}"
-  screen -S "${SESSION_NAME}" -p "${GW}" -X stuff "echo 'Launching instance ${i} (see ${INSTANCE_SCRIPT})'; bash ${INSTANCE_SCRIPT}^M"
+  byobu new-window -t "${SESSION_NAME}" -n "${GW}"
+  byobu send-keys -t "${SESSION_NAME}:${GW}" "echo 'Launching instance ${i} (see ${INSTANCE_SCRIPT})'; bash ${INSTANCE_SCRIPT}" C-m
 
   # registration wrapper script
   REG_SCRIPT="${WORKSPACE_DIR}/.ps_register_${i}.sh"
@@ -315,23 +324,75 @@ EOF
 
   # Create new window for registration
   RW="reg${i}"
-  screen -S "${SESSION_NAME}" -X screen -t "${RW}"
-  screen -S "${SESSION_NAME}" -p "${RW}" -X stuff "bash ${REG_SCRIPT}^M"
+  byobu new-window -t "${SESSION_NAME}" -n "${RW}"
+  byobu send-keys -t "${SESSION_NAME}:${RW}" "bash ${REG_SCRIPT}" C-m
 
   sleep 0.5
 done
 
-log "✅ All ${INSTANCES} instance(s) launched in screen session '${SESSION_NAME}'."
+log "✅ All ${INSTANCES} instance(s) launched in byobu session '${SESSION_NAME}' using ${BYOBU_BACKEND} backend."
 log ""
-log "Screen commands:"
-log "  Attach:        screen -r ${SESSION_NAME}"
-log "  List sessions: screen -ls"
-log "  List windows:  screen -S ${SESSION_NAME} -X windows"
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log "📺 BYOBU COMMANDS (Enhanced Terminal Multiplexer)"
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 log ""
-log "Inside screen session:"
-log "  Switch window: Ctrl+a \" (shows list)"
-log "  Next window:   Ctrl+a n"
-log "  Prev window:   Ctrl+a p"
-log "  Detach:        Ctrl+a d"
+log "🔗 Attach to session:"
+log "   byobu attach -t ${SESSION_NAME}"
 log ""
-log "Logs available in: ${LOG_DIR}/"
+log "📋 List all sessions:"
+log "   byobu list-sessions"
+log ""
+log "🪟 List windows in session:"
+log "   byobu list-windows -t ${SESSION_NAME}"
+log ""
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log "⌨️  INSIDE BYOBU SESSION - KEYBOARD SHORTCUTS"
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log ""
+log "Window Navigation:"
+log "   F2           - Create new window"
+log "   F3 / F4      - Previous / Next window"
+log "   Shift+F2     - Split horizontal"
+log "   Ctrl+F2      - Split vertical"
+log "   Shift+Left   - Move to left pane"
+log "   Shift+Right  - Move to right pane"
+log "   Shift+Up     - Move to upper pane"
+log "   Shift+Down   - Move to lower pane"
+log "   F6           - Detach session"
+log "   F8           - Rename window"
+log "   F9           - Configuration menu"
+log ""
+if [[ "${BYOBU_BACKEND}" == "tmux" ]]; then
+log "Alternative (tmux-style):"
+log "   Ctrl+a c     - Create new window"
+log "   Ctrl+a n     - Next window"
+log "   Ctrl+a p     - Previous window"
+log "   Ctrl+a d     - Detach session"
+log "   Ctrl+a \"     - List all windows"
+elif [[ "${BYOBU_BACKEND}" == "screen" ]]; then
+log "Alternative (screen-style):"
+log "   Ctrl+a c     - Create new window"
+log "   Ctrl+a n     - Next window"
+log "   Ctrl+a p     - Previous window"
+log "   Ctrl+a d     - Detach session"
+log "   Ctrl+a \"     - List all windows"
+fi
+log ""
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log "📁 LOG FILES"
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log ""
+log "   ${LOG_DIR}/turnserver.out"
+log "   ${LOG_DIR}/signaller.log"
+for i in $(seq 1 "${INSTANCES}"); do
+log "   ${LOG_DIR}/register_${i}.log"
+done
+log ""
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log "🌐 ACCESS URLS"
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log ""
+log "   Player URL: http://${PUBLIC_IPADDR}:${BASE_PLAYER}"
+log "   TURN Server: ${PUBLIC_IPADDR}:${TURN_LISTEN_PORT}"
+log ""
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
