@@ -26,10 +26,22 @@ S3_PATH_PS="${S3_PATH_PS:-s3://psfiles2/PS_Next_Claude_904.7z}"
 AUX_SCRIPT_URL="${AUX_SCRIPT_URL:-https://raw.githubusercontent.com/aaryansachdeva/vastStartupScripts/main/fotonInstanceRegister_vast.sh}"
 
 # Ports (base values; each instance will increment)
-BASE_PLAYER="${BASE_PLAYER:-81}"
-BASE_STREAMER="${BASE_STREAMER:-8888}"
-BASE_SFU="${BASE_SFU:-9888}"
+# NOTE: Signaller uses different ports than game instances!
+SIGNALLER_PLAYER_PORT="${SIGNALLER_PLAYER_PORT:-79}"     # Signaller player port (not used by game)
+SIGNALLER_STREAMER_PORT="${SIGNALLER_STREAMER_PORT:-8887}" # Signaller streamer port (not used by game)
+SIGNALLER_SFU_PORT="${SIGNALLER_SFU_PORT:-9887}"         # Signaller SFU port (not used by game)
+BASE_PLAYER="${BASE_PLAYER:-81}"                          # Game instance player port (for registration)
+BASE_STREAMER="${BASE_STREAMER:-8888}"                    # Game instance streamer port (what game connects to)
+BASE_SFU="${BASE_SFU:-9888}"                              # Game instance SFU port (for registration)
 TURN_LISTEN_PORT="${TURN_LISTEN_PORT:-19303}"
+
+# Check if running on Vast.ai and use mapped port
+if [[ -n "${VAST_UDP_PORT_19303:-}" ]]; then
+  TURN_PUBLIC_PORT="${VAST_UDP_PORT_19303}"
+  log "Vast.ai detected - using mapped TURN port: ${TURN_PUBLIC_PORT}"
+else
+  TURN_PUBLIC_PORT="${TURN_LISTEN_PORT}"
+fi
 
 # TURN / registration creds
 TURN_USER="${TURN_USER:-PixelStreamingUser}"
@@ -326,56 +338,105 @@ log "Creating screen session ${SESSION_NAME}"
 # Create detached screen session
 screen -dmS "${SESSION_NAME}"
 
-# Start turnserver in first window (rename it to 'turn')
-TURN_CMD="turnserver -n --listening-port=${TURN_LISTEN_PORT} --external-ip=${PUBLIC_IPADDR:-} --relay-ip=${LOCAL_IP:-} --user=${TURN_USER}:${TURN_PASS} --realm=${TURN_REALM} --no-tls --no-dtls -a -v"
-log "Starting TURN via screen: ${TURN_CMD}"
+# STEP 1: Start TURN server FIRST (this is critical!)
 screen -S "${SESSION_NAME}" -X title "turn"
-screen -S "${SESSION_NAME}" -p "turn" -X stuff "echo 'Starting coturn...'; nohup ${TURN_CMD} > ${LOG_DIR}/turnserver.out 2>&1 & sleep 1; tail -f ${LOG_DIR}/turnserver.out^M"
-sleep 1
+TURN_CMD="turnserver -n --listening-port=${TURN_LISTEN_PORT} --external-ip=${PUBLIC_IPADDR:-} --relay-ip=${LOCAL_IP:-} --user=${TURN_USER}:${TURN_PASS} --realm=${TURN_REALM} --no-tls --no-dtls -a -v"
+log "Starting TURN server: ${TURN_CMD}"
+screen -S "${SESSION_NAME}" -p "turn" -X stuff "${TURN_CMD} > ${LOG_DIR}/turnserver.out 2>&1 & echo 'TURN started'; sleep 2; tail -f ${LOG_DIR}/turnserver.out^M"
+sleep 3  # Wait for TURN to initialize
 
-# Create new window for signaller
+# STEP 2: Start signaller with its own ports
 screen -S "${SESSION_NAME}" -X screen -t "signaller"
-STREAMER_PORT_1="${BASE_STREAMER}"
-PLAYER_PORT_1="${BASE_PLAYER}"
-SFU_PORT_1="${BASE_SFU}"
 if [[ -x "${SIGNALLER_START_SCRIPT}" ]]; then
-  SIGN_CMD="${SIGNALLER_START_SCRIPT} --player_port=${PLAYER_PORT_1} --streamer_port=${STREAMER_PORT_1} --sfu_port=${SFU_PORT_1}"
-  log "Starting signaller in screen: ${SIGN_CMD}"
-  screen -S "${SESSION_NAME}" -p "signaller" -X stuff "cd ${SIGNALLER_DIR} || true; echo 'Starting signaller...'; nohup bash -lc '${SIGN_CMD}' > ${LOG_DIR}/signaller.log 2>&1 & sleep 1; tail -f ${LOG_DIR}/signaller.log^M"
+  SIGN_CMD="${SIGNALLER_START_SCRIPT} --player_port=${SIGNALLER_PLAYER_PORT} --streamer_port=${SIGNALLER_STREAMER_PORT} --sfu_port=${SIGNALLER_SFU_PORT}"
+  log "Starting signaller: player=${SIGNALLER_PLAYER_PORT}, streamer=${SIGNALLER_STREAMER_PORT}, sfu=${SIGNALLER_SFU_PORT}"
+  screen -S "${SESSION_NAME}" -p "signaller" -X stuff "cd ${SIGNALLER_DIR} && echo 'Starting signaller...'; ${SIGN_CMD} 2>&1 | tee ${LOG_DIR}/signaller.log^M"
+  sleep 5  # Wait for signaller to initialize
 else
-  screen -S "${SESSION_NAME}" -p "signaller" -X stuff "echo 'Signaller start script missing: ${SIGNALLER_START_SCRIPT}'^M"
+  log "ERROR: Signaller start script not found: ${SIGNALLER_START_SCRIPT}"
+  screen -S "${SESSION_NAME}" -p "signaller" -X stuff "echo 'Signaller script missing: ${SIGNALLER_START_SCRIPT}'^M"
 fi
 
-# ---------- Launch instances and registration windows ----------
+# STEP 3: Add nvidia-smi monitoring window (optional but useful)
+screen -S "${SESSION_NAME}" -X screen -t "nvidia"
+screen -S "${SESSION_NAME}" -p "nvidia" -X stuff "nvidia-smi dmon -s um -d 1^M"
+
+# STEP 4: Launch game instances (with delays between each)
 for i in $(seq 1 "${INSTANCES}"); do
   PPORT=$((BASE_PLAYER + i - 1))
   SPORT=$((BASE_STREAMER + i - 1))
   SFUP=$((BASE_SFU + i - 1))
   XVFB_DISPLAY=$((XVFB_BASE + i - 1))
 
-  # create instance start script
+  log "Preparing instance ${i}/${INSTANCES} (player=${PPORT}, streamer=${SPORT}, sfu=${SFUP})..."
+
+  # Create instance start script
   INSTANCE_SCRIPT="${WORKSPACE_DIR}/.ps_start_instance_${i}.sh"
   cat > "${INSTANCE_SCRIPT}" <<EOF
 #!/usr/bin/env bash
 export DISPLAY=":${XVFB_DISPLAY}"
-echo "Instance ${i} - starting game (player=${PPORT} streamer=${SPORT} sfu=${SFUP})"
-sudo -H -u ${FOTON_USER} bash -lc "xvfb-run -n ${XVFB_DISPLAY} -s '-screen 0 ${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH}' '${GAME_LAUNCHER}' ${PIXEL_FLAGS} -PixelStreamingUrl=ws://localhost:${SPORT} -ExecCmds='r.TemporalAA.Upsampling 1,r.ScreenPercentage 50,r.TemporalAA.HistoryScreenPercentage 200'"
+echo "Instance ${i} starting at \$(date)"
+echo "Connecting to ws://localhost:${SPORT}"
+
+# Run as foton user with xvfb
+sudo -H -u ${FOTON_USER} bash -lc "\
+  xvfb-run -n ${XVFB_DISPLAY} -s '-screen 0 ${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH}' \
+  '${GAME_LAUNCHER}' \
+  -RenderOffscreen \
+  -Vulkan \
+  -PixelStreamingEncoderCodec=H264 \
+  -PixelStreamingUrl=ws://localhost:${SPORT} \
+  -PixelStreamingWebRTCStartBitrate=2000000 \
+  -PixelStreamingWebRTCMinBitrate=1000000 \
+  -PixelStreamingWebRTCMaxBitrate=4000000 \
+  -PixelStreamingWebRTCMaxFps=30 \
+  -ExecCmds='r.TemporalAA.Upsampling 1,r.ScreenPercentage 50,r.TemporalAA.HistoryScreenPercentage 200' \
+  2>&1 | tee ${LOG_DIR}/game_${i}.log"
 EOF
   chmod +x "${INSTANCE_SCRIPT}" || true
 
   # Create new window for game instance
   GW="game${i}"
   screen -S "${SESSION_NAME}" -X screen -t "${GW}"
-  screen -S "${SESSION_NAME}" -p "${GW}" -X stuff "echo 'Launching instance ${i} (see ${INSTANCE_SCRIPT})'; bash ${INSTANCE_SCRIPT}^M"
+  screen -S "${SESSION_NAME}" -p "${GW}" -X stuff "bash ${INSTANCE_SCRIPT}^M"
+  
+  sleep 5  # Wait for game to start before launching next instance
+done
 
-  # registration wrapper script
+# STEP 5: Wait for all games to fully initialize
+log "Waiting 10s for all game instances to fully initialize..."
+sleep 10
+
+# STEP 6: Register all instances (after ALL games have started)
+for i in $(seq 1 "${INSTANCES}"); do
+  PPORT=$((BASE_PLAYER + i - 1))
+  SPORT=$((BASE_STREAMER + i - 1))
+  SFUP=$((BASE_SFU + i - 1))
+
+  log "Registering instance ${i} (player=${PPORT}, streamer=${SPORT}, sfu=${SFUP})..."
+
+  # Registration wrapper script
   REG_SCRIPT="${WORKSPACE_DIR}/.ps_register_${i}.sh"
   cat > "${REG_SCRIPT}" <<EOF
 #!/usr/bin/env bash
-echo "Registering instance ${i}"
-cd \$(dirname "${SIGNALLER_REG_SCRIPT}") || true
-nohup bash -lc '${SIGNALLER_REG_SCRIPT} --player_port=${PPORT} --streamer_port=${SPORT} --sfu_port=${SFUP} --publicip ${PUBLIC_IPADDR:-} --turn ${PUBLIC_IPADDR:-}:${TURN_LISTEN_PORT} --turn-user ${TURN_USER} --turn-pass ${TURN_PASS} --stun stun.l.google.com:19302' > ${LOG_DIR}/register_${i}.log 2>&1 &
-sleep 1
+echo "Registering instance ${i} at \$(date)"
+cd \$(dirname "${SIGNALLER_REG_SCRIPT}") || exit 1
+
+# Use Vast.ai mapped port if available, otherwise use direct port
+TURN_PORT="${TURN_PUBLIC_PORT}"
+
+${SIGNALLER_REG_SCRIPT} \
+  --player_port=${PPORT} \
+  --streamer_port=${SPORT} \
+  --sfu_port=${SFUP} \
+  --publicip ${PUBLIC_IPADDR:-} \
+  --turn ${PUBLIC_IPADDR:-}:\${TURN_PORT} \
+  --turn-user ${TURN_USER} \
+  --turn-pass ${TURN_PASS} \
+  --stun stun.l.google.com:19302 \
+  2>&1 | tee ${LOG_DIR}/register_${i}.log
+
+echo "Registration complete for instance ${i}"
 tail -f ${LOG_DIR}/register_${i}.log
 EOF
   chmod +x "${REG_SCRIPT}" || true
@@ -385,7 +446,7 @@ EOF
   screen -S "${SESSION_NAME}" -X screen -t "${RW}"
   screen -S "${SESSION_NAME}" -p "${RW}" -X stuff "bash ${REG_SCRIPT}^M"
 
-  sleep 0.5
+  sleep 2  # Small delay between registrations
 done
 
 log "✅ All ${INSTANCES} instance(s) launched in screen session '${SESSION_NAME}'."
@@ -417,6 +478,45 @@ log "   Ctrl+a d     - Detach session"
 log "   Ctrl+a A     - Rename current window"
 log "   Ctrl+a Tab   - Switch between splits"
 log ""
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log "📁 LOG FILES"
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log ""
+log "   ${LOG_DIR}/turnserver.out"
+log "   ${LOG_DIR}/signaller.log"
+for i in $(seq 1 "${INSTANCES}"); do
+log "   ${LOG_DIR}/game_${i}.log"
+log "   ${LOG_DIR}/register_${i}.log"
+done
+log ""
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log "🌐 ACCESS"
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log ""
+log "   Player URL: http://${PUBLIC_IPADDR}:${BASE_PLAYER}"
+log "   TURN Server: ${PUBLIC_IPADDR}:${TURN_PUBLIC_PORT}"
+log "   Signaller Player: ${PUBLIC_IPADDR}:${SIGNALLER_PLAYER_PORT}"
+log ""
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log ""
+log "🔍 TROUBLESHOOTING"
+log ""
+log "Check TURN server status:"
+log "   tail -f ${LOG_DIR}/turnserver.out"
+log ""
+log "Check signaller status:"
+log "   tail -f ${LOG_DIR}/signaller.log"
+log ""
+log "Check game instance logs:"
+log "   tail -f ${LOG_DIR}/game_1.log"
+log ""
+log "Check registration status:"
+log "   tail -f ${LOG_DIR}/register_1.log"
+log ""
+log "Test TURN connectivity:"
+log "   turnutils-uclient -v -u ${TURN_USER} -w ${TURN_PASS} ${PUBLIC_IPADDR}:${TURN_LISTEN_PORT}"
+log ""
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 log "📁 LOG FILES"
 log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
