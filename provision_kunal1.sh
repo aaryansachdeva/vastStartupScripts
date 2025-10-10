@@ -2,11 +2,12 @@
 #
 # provision_auto_start.sh
 # Full automated provisioning for Pixel Streaming on Vast.ai
-# - Uses Byobu (wrapper around tmux/screen with better UI)
+# - Uses tmux (byobu has terminal issues in automated scripts)
+# - Installs Node.js 20 LTS for signalling server
 # - Robust: fixes urllib3/botocore issues by using a venv awscli
 # - Ensures all .sh under /workspace are executable
 # - Installs npm deps for signaller
-# - Starts coturn, signaller, game instances, and registers them (byobu)
+# - Starts coturn, signaller, game instances, and registers them
 #
 set -euo pipefail
 IFS=$'\n\t'
@@ -15,7 +16,7 @@ IFS=$'\n\t'
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 LOG_DIR="${LOG_DIR:-${WORKSPACE_DIR}/logs}"
 INSTANCES="${INSTANCES:-1}"              # default instances (can override with -n)
-SESSION_NAME="${SESSION_NAME:-pixel}"    # byobu session
+SESSION_NAME="${SESSION_NAME:-pixel}"    # tmux session
 GAME_LAUNCHER="${GAME_LAUNCHER:-${WORKSPACE_DIR}/Linux/AudioTestProject02.sh}"
 SIGNALLER_DIR="${SIGNALLER_DIR:-${WORKSPACE_DIR}/PS_Next_Claude/WebServers/SignallingWebServer}"
 SIGNALLER_START_SCRIPT="${SIGNALLER_START_SCRIPT:-${SIGNALLER_DIR}/platform_scripts/bash/start_with_turn.sh}"
@@ -58,27 +59,25 @@ mkdir -p "${LOG_DIR}" "${WORKSPACE_DIR}"
 
 usage() {
   cat <<EOF
-Usage: $0 [-n NUM_INSTANCES] [--skip-download] [--session NAME] [--backend tmux|screen]
-Example: $0 -n 2 --session pixel --backend tmux
+Usage: $0 [-n NUM_INSTANCES] [--skip-download] [--session NAME]
+Example: $0 -n 2 --session pixel
 EOF
   exit 1
 }
 
 # ---------- Arg parsing ----------
 SKIP_DOWNLOAD=0
-BYOBU_BACKEND="${BYOBU_BACKEND:-tmux}"  # default to tmux, can use screen
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -n) INSTANCES="$2"; shift 2;;
     --skip-download) SKIP_DOWNLOAD=1; shift;;
     --session) SESSION_NAME="$2"; shift 2;;
-    --backend) BYOBU_BACKEND="$2"; shift 2;;
     -h|--help) usage;;
     *) echo "Unknown arg: $1"; usage;;
   esac
 done
 
-log "Starting provisioning: session='${SESSION_NAME}', instances=${INSTANCES}, backend=${BYOBU_BACKEND}"
+log "Starting provisioning: session='${SESSION_NAME}', instances=${INSTANCES}"
 
 # ---------- Auto-detect PUBLIC_IPADDR and LOCAL_IP (best-effort) ----------
 PUBLIC_IPADDR="${PUBLIC_IPADDR:-}"
@@ -158,17 +157,63 @@ download_from_s3() {
 }
 
 # ---------- Install required packages (best-effort) ----------
-log "Updating apt and installing packages (p7zip, python3-pip, curl, wget, byobu, tmux, screen, coturn, xvfb, ffmpeg, nodejs)..."
+log "Updating apt and installing packages..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq || log "apt-get update failed"
-apt-get install -y -qq p7zip-full python3-pip curl wget byobu tmux screen coturn xvfb x11-apps mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg nodejs npm || {
+apt-get install -y -qq p7zip-full python3-pip curl wget screen coturn xvfb x11-apps mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg ca-certificates gnupg || {
   log "apt install returned non-zero; retrying without -qq for visibility..."
-  apt-get install -y p7zip-full python3-pip curl wget byobu tmux screen coturn xvfb x11-apps mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg nodejs npm || log "apt-get install failed"
+  apt-get install -y p7zip-full python3-pip curl wget screen coturn xvfb x11-apps mesa-vulkan-drivers vulkan-tools libvulkan1 ffmpeg ca-certificates gnupg || log "apt-get install failed"
 }
 
 # ensure 7z present
 if ! command -v 7z >/dev/null 2>&1; then
-  log "7z missing after install; aborting extraction step"
+  log "7z missing after install; will skip extraction"
+fi
+
+# ---------- Install Node.js 20 LTS (CRITICAL for signalling server) ----------
+log "Checking Node.js version..."
+CURRENT_NODE_VERSION=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1 || echo "0")
+
+if [ "$CURRENT_NODE_VERSION" -lt 18 ]; then
+  log "Node.js v${CURRENT_NODE_VERSION} is too old. Installing Node.js 20 LTS..."
+  
+  # Remove old nodejs/npm
+  apt-get remove -y nodejs npm 2>/dev/null || true
+  apt-get autoremove -y 2>/dev/null || true
+  
+  # Install Node.js 20 LTS using NodeSource
+  log "Installing Node.js 20 LTS from NodeSource..."
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash - || {
+    log "NodeSource setup failed, trying manual method..."
+    mkdir -p /etc/apt/keyrings
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+    apt-get update -qq
+  }
+  
+  apt-get install -y nodejs || {
+    log "Failed to install Node.js from NodeSource, trying alternative..."
+    # Try using n version manager as fallback
+    npm install -g n 2>/dev/null && n lts || log "All Node.js install methods failed"
+  }
+  
+  # Update PATH
+  export PATH="/usr/local/bin:$PATH"
+  hash -r 2>/dev/null || true
+  
+  # Verify installation
+  NEW_NODE_VERSION=$(node --version 2>/dev/null || echo "not installed")
+  log "Node.js version after install: ${NEW_NODE_VERSION}"
+  log "npm version after install: $(npm --version 2>/dev/null || echo 'not installed')"
+  
+  if ! command -v node >/dev/null 2>&1 || [ "$(node --version | sed 's/v//' | cut -d. -f1)" -lt 18 ]; then
+    log "⚠️  CRITICAL: Node.js 18+ installation FAILED!"
+    log "⚠️  Signalling server will NOT work. Please install Node.js 18+ manually."
+  else
+    log "✅ Node.js $(node --version) installed successfully"
+  fi
+else
+  log "✅ Node.js v${CURRENT_NODE_VERSION} is acceptable (>= 18)"
 fi
 
 # ---------- Download and extract archives (if requested) ----------
@@ -221,16 +266,36 @@ if [[ ! -f "${SIGNALLER_REG_SCRIPT}" ]]; then
   chmod +x "${SIGNALLER_REG_SCRIPT}" || true
 fi
 
-# ---------- Ensure all .sh in workspace are executable (KEY FIX) ----------
+# ---------- Ensure all .sh in workspace are executable ----------
 log "Making all .sh files under ${WORKSPACE_DIR} executable..."
-find "${WORKSPACE_DIR}" -type f -name "*.sh" -exec chmod +x {} \; || log "find+chmod had issues"
+find "${WORKSPACE_DIR}" -type f -name "*.sh" -exec chmod +x {} \; 2>/dev/null || log "find+chmod had issues"
 log "All .sh files chmodded ✅"
 
 # ---------- Ensure signaller npm deps ----------
 if [[ -d "${SIGNALLER_DIR}" && -f "${SIGNALLER_DIR}/package.json" ]]; then
   log "Installing npm dependencies for SignallingWebServer..."
   pushd "${SIGNALLER_DIR}" >/dev/null 2>&1 || true
-  npm ci || npm install || log "npm install failed (continuing)"
+  
+  # Verify Node.js version before npm install
+  NODE_VER=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1 || echo "0")
+  if [ "$NODE_VER" -ge 18 ]; then
+    log "Node.js $(node --version) - installing npm packages..."
+    
+    # Try npm ci first (faster, more reliable), fall back to npm install
+    # Suppress EBADENGINE warnings as they're just noise
+    if npm ci 2>&1 | grep -v "EBADENGINE" | tee /tmp/npm_install.log | grep -q "added\|up to date"; then
+      log "✅ npm ci completed"
+    elif npm install 2>&1 | grep -v "EBADENGINE" | tee /tmp/npm_install.log | grep -q "added\|up to date"; then
+      log "✅ npm install completed"
+    else
+      log "⚠️  npm install had issues but continuing..."
+      tail -20 /tmp/npm_install.log 2>/dev/null || true
+    fi
+  else
+    log "⚠️  CRITICAL: Node.js v${NODE_VER} is too old (need >=18)"
+    log "    Skipping npm install - signalling server WILL FAIL!"
+  fi
+  
   popd >/dev/null 2>&1 || true
 else
   log "No package.json found in ${SIGNALLER_DIR}; skipping npm install"
@@ -245,47 +310,40 @@ if [[ -d "${WORKSPACE_DIR}/Linux" ]]; then
   chown -R "${FOTON_USER}:${FOTON_USER}" "${WORKSPACE_DIR}/Linux" || true
 fi
 
-# ---------- Byobu orchestration ----------
-if ! command -v byobu >/dev/null 2>&1; then
-  log "byobu missing; please install byobu (apt-get install byobu)"; exit 1
+# ---------- Screen orchestration ----------
+if ! command -v screen >/dev/null 2>&1; then
+  log "screen missing; please install screen"; exit 1
 fi
 
-# Configure byobu to use specified backend (tmux or screen)
-export BYOBU_BACKEND="${BYOBU_BACKEND}"
-log "Configuring byobu to use backend: ${BYOBU_BACKEND}"
-
-# Set byobu backend preference
-mkdir -p ~/.byobu
-echo "${BYOBU_BACKEND}" > ~/.byobu/backend
-
 # Kill existing session if any
-if byobu list-sessions 2>/dev/null | grep -q "^${SESSION_NAME}:"; then
-  log "Killing existing byobu session ${SESSION_NAME}"
-  byobu kill-session -t "${SESSION_NAME}" 2>/dev/null || true
+if screen -ls | grep -q "\.${SESSION_NAME}[[:space:]]"; then
+  log "Killing existing screen session ${SESSION_NAME}"
+  screen -S "${SESSION_NAME}" -X quit 2>/dev/null || true
   sleep 1
 fi
 
-log "Creating byobu session ${SESSION_NAME} with ${BYOBU_BACKEND} backend"
-# Create new detached byobu session
-byobu new-session -d -s "${SESSION_NAME}" -n turn
+log "Creating screen session ${SESSION_NAME}"
+# Create detached screen session
+screen -dmS "${SESSION_NAME}"
 
-# Start turnserver in first window
+# Start turnserver in first window (rename it to 'turn')
 TURN_CMD="turnserver -n --listening-port=${TURN_LISTEN_PORT} --external-ip=${PUBLIC_IPADDR:-} --relay-ip=${LOCAL_IP:-} --user=${TURN_USER}:${TURN_PASS} --realm=${TURN_REALM} --no-tls --no-dtls -a -v"
-log "Starting TURN via byobu: ${TURN_CMD}"
-byobu send-keys -t "${SESSION_NAME}:turn" "echo 'Starting coturn...'; nohup ${TURN_CMD} > ${LOG_DIR}/turnserver.out 2>&1 & sleep 1; tail -f ${LOG_DIR}/turnserver.out" C-m
+log "Starting TURN via screen: ${TURN_CMD}"
+screen -S "${SESSION_NAME}" -X title "turn"
+screen -S "${SESSION_NAME}" -p "turn" -X stuff "echo 'Starting coturn...'; nohup ${TURN_CMD} > ${LOG_DIR}/turnserver.out 2>&1 & sleep 1; tail -f ${LOG_DIR}/turnserver.out^M"
 sleep 1
 
 # Create new window for signaller
-byobu new-window -t "${SESSION_NAME}" -n signaller
+screen -S "${SESSION_NAME}" -X screen -t "signaller"
 STREAMER_PORT_1="${BASE_STREAMER}"
 PLAYER_PORT_1="${BASE_PLAYER}"
 SFU_PORT_1="${BASE_SFU}"
 if [[ -x "${SIGNALLER_START_SCRIPT}" ]]; then
   SIGN_CMD="${SIGNALLER_START_SCRIPT} --player_port=${PLAYER_PORT_1} --streamer_port=${STREAMER_PORT_1} --sfu_port=${SFU_PORT_1}"
-  log "Starting signaller in byobu: ${SIGN_CMD}"
-  byobu send-keys -t "${SESSION_NAME}:signaller" "cd ${SIGNALLER_DIR} || true; echo 'Starting signaller...'; nohup bash -lc '${SIGN_CMD}' > ${LOG_DIR}/signaller.log 2>&1 & sleep 1; tail -f ${LOG_DIR}/signaller.log" C-m
+  log "Starting signaller in screen: ${SIGN_CMD}"
+  screen -S "${SESSION_NAME}" -p "signaller" -X stuff "cd ${SIGNALLER_DIR} || true; echo 'Starting signaller...'; nohup bash -lc '${SIGN_CMD}' > ${LOG_DIR}/signaller.log 2>&1 & sleep 1; tail -f ${LOG_DIR}/signaller.log^M"
 else
-  byobu send-keys -t "${SESSION_NAME}:signaller" "echo 'Signaller start script missing: ${SIGNALLER_START_SCRIPT}'" C-m
+  screen -S "${SESSION_NAME}" -p "signaller" -X stuff "echo 'Signaller start script missing: ${SIGNALLER_START_SCRIPT}'^M"
 fi
 
 # ---------- Launch instances and registration windows ----------
@@ -307,8 +365,8 @@ EOF
 
   # Create new window for game instance
   GW="game${i}"
-  byobu new-window -t "${SESSION_NAME}" -n "${GW}"
-  byobu send-keys -t "${SESSION_NAME}:${GW}" "echo 'Launching instance ${i} (see ${INSTANCE_SCRIPT})'; bash ${INSTANCE_SCRIPT}" C-m
+  screen -S "${SESSION_NAME}" -X screen -t "${GW}"
+  screen -S "${SESSION_NAME}" -p "${GW}" -X stuff "echo 'Launching instance ${i} (see ${INSTANCE_SCRIPT})'; bash ${INSTANCE_SCRIPT}^M"
 
   # registration wrapper script
   REG_SCRIPT="${WORKSPACE_DIR}/.ps_register_${i}.sh"
@@ -324,59 +382,40 @@ EOF
 
   # Create new window for registration
   RW="reg${i}"
-  byobu new-window -t "${SESSION_NAME}" -n "${RW}"
-  byobu send-keys -t "${SESSION_NAME}:${RW}" "bash ${REG_SCRIPT}" C-m
+  screen -S "${SESSION_NAME}" -X screen -t "${RW}"
+  screen -S "${SESSION_NAME}" -p "${RW}" -X stuff "bash ${REG_SCRIPT}^M"
 
   sleep 0.5
 done
 
-log "✅ All ${INSTANCES} instance(s) launched in byobu session '${SESSION_NAME}' using ${BYOBU_BACKEND} backend."
+log "✅ All ${INSTANCES} instance(s) launched in screen session '${SESSION_NAME}'."
 log ""
 log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log "📺 BYOBU COMMANDS (Enhanced Terminal Multiplexer)"
+log "📺 SCREEN COMMANDS"
 log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 log ""
 log "🔗 Attach to session:"
-log "   byobu attach -t ${SESSION_NAME}"
+log "   screen -r ${SESSION_NAME}"
 log ""
 log "📋 List all sessions:"
-log "   byobu list-sessions"
+log "   screen -ls"
 log ""
 log "🪟 List windows in session:"
-log "   byobu list-windows -t ${SESSION_NAME}"
+log "   screen -S ${SESSION_NAME} -X windows"
 log ""
 log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log "⌨️  INSIDE BYOBU SESSION - KEYBOARD SHORTCUTS"
+log "⌨️  INSIDE SCREEN SESSION - KEYBOARD SHORTCUTS"
 log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 log ""
-log "Window Navigation:"
-log "   F2           - Create new window"
-log "   F3 / F4      - Previous / Next window"
-log "   Shift+F2     - Split horizontal"
-log "   Ctrl+F2      - Split vertical"
-log "   Shift+Left   - Move to left pane"
-log "   Shift+Right  - Move to right pane"
-log "   Shift+Up     - Move to upper pane"
-log "   Shift+Down   - Move to lower pane"
-log "   F6           - Detach session"
-log "   F8           - Rename window"
-log "   F9           - Configuration menu"
-log ""
-if [[ "${BYOBU_BACKEND}" == "tmux" ]]; then
-log "Alternative (tmux-style):"
 log "   Ctrl+a c     - Create new window"
 log "   Ctrl+a n     - Next window"
 log "   Ctrl+a p     - Previous window"
+log "   Ctrl+a \"     - List all windows (interactive)"
+log "   Ctrl+a S     - Split horizontal"
+log "   Ctrl+a |     - Split vertical"
 log "   Ctrl+a d     - Detach session"
-log "   Ctrl+a \"     - List all windows"
-elif [[ "${BYOBU_BACKEND}" == "screen" ]]; then
-log "Alternative (screen-style):"
-log "   Ctrl+a c     - Create new window"
-log "   Ctrl+a n     - Next window"
-log "   Ctrl+a p     - Previous window"
-log "   Ctrl+a d     - Detach session"
-log "   Ctrl+a \"     - List all windows"
-fi
+log "   Ctrl+a A     - Rename current window"
+log "   Ctrl+a Tab   - Switch between splits"
 log ""
 log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 log "📁 LOG FILES"
@@ -389,10 +428,10 @@ log "   ${LOG_DIR}/register_${i}.log"
 done
 log ""
 log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-log "🌐 ACCESS URLS"
+log "🌐 ACCESS"
 log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 log ""
 log "   Player URL: http://${PUBLIC_IPADDR}:${BASE_PLAYER}"
-log "   TURN Server: ${PUBLIC_IPADDR}:${TURN_LISTEN_PORT}"
+log "   TURN: ${PUBLIC_IPADDR}:${TURN_LISTEN_PORT}"
 log ""
 log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
