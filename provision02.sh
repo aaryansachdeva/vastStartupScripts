@@ -93,17 +93,17 @@ echo "Started ue-instance-3 session"
 sleep 2
 
 # Register first instance with foton server
-tmux new-session -d -s register-1 "cd /workspace/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash && ./fotonInstanceRegister_vast.sh --player_port=81 --streamer_port=8888 --sfu_port=9888 --publicip $PUBLIC_IPADDR --turn $PUBLIC_IPADDR:$VAST_UDP_PORT_19303 --turn-user PixelStreamingUser --turn-pass AnotherTURNintheroad --stun stun.l.google.com:19302
+tmux new-session -d -s register-1 "cd /workspace/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash && ./fotonInstanceRegister_vast.sh --player_port=81 --streamer_port=8888 --sfu_port=9888 --publicip $PUBLIC_IPADDR --turn $PUBLIC_IPADDR:$VAST_UDP_PORT_19303 --turn-user PixelStreamingUser --turn-pass AnotherTURNintheroad --stun stun.l.google.com:19302"
 echo "Started register-1 session"
 sleep 2
 
 # Register second instance with foton server
-tmux new-session -d -s register-2 "cd /workspace/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash && ./fotonInstanceRegister_vast.sh --player_port=82 --streamer_port=8889 --sfu_port=9889 --publicip $PUBLIC_IPADDR --turn $PUBLIC_IPADDR:$VAST_UDP_PORT_19303 --turn-user PixelStreamingUser --turn-pass AnotherTURNintheroad --stun stun.l.google.com:19302
+tmux new-session -d -s register-2 "cd /workspace/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash && ./fotonInstanceRegister_vast.sh --player_port=82 --streamer_port=8889 --sfu_port=9889 --publicip $PUBLIC_IPADDR --turn $PUBLIC_IPADDR:$VAST_UDP_PORT_19303 --turn-user PixelStreamingUser --turn-pass AnotherTURNintheroad --stun stun.l.google.com:19302"
 echo "Started register-2 session"
 sleep 2
 
 # Register third instance with foton server
-tmux new-session -d -s register-3 "cd /workspace/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash && ./fotonInstanceRegister_vast.sh --player_port=83 --streamer_port=8890 --sfu_port=9890 --publicip $PUBLIC_IPADDR --turn $PUBLIC_IPADDR:$VAST_UDP_PORT_19303 --turn-user PixelStreamingUser --turn-pass AnotherTURNintheroad --stun stun.l.google.com:19302
+tmux new-session -d -s register-3 "cd /workspace/PS_Next_Claude/WebServers/SignallingWebServer/platform_scripts/bash && ./fotonInstanceRegister_vast.sh --player_port=83 --streamer_port=8890 --sfu_port=9890 --publicip $PUBLIC_IPADDR --turn $PUBLIC_IPADDR:$VAST_UDP_PORT_19303 --turn-user PixelStreamingUser --turn-pass AnotherTURNintheroad --stun stun.l.google.com:19302"
 echo "Started register-3 session"
 sleep 2
 
